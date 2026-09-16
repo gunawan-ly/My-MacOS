@@ -2,7 +2,7 @@
 set -uo pipefail
 
 CRD_CODE="${CRD_CODE:-}"
-CRD_NAME="${CRD_NAME:-mac-runner}"
+CRD_NAME="${CRD_NAME:-mac-${GITHUB_RUN_ID:-runner}}"
 CRD_PIN="${CRD_PIN:-}"
 KEEP_ALIVE_MINUTES="${KEEP_ALIVE_MINUTES:-355}"
 

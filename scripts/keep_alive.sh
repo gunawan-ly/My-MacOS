@@ -2,6 +2,7 @@
 set -uo pipefail
 
 KEEP_ALIVE_MINUTES="${KEEP_ALIVE_MINUTES:-355}"
+CRD_NAME="${CRD_NAME:-mac-${GITHUB_RUN_ID:-runner}}"
 INTERVAL=60
 
 # Keluar sedikit sebelum timeout job (360 mnt) supaya step save/cache sempat jalan.
