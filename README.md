@@ -29,10 +29,10 @@ Runner sifatnya **ephemeral**:
 
 2. Buka **https://remotedesktop.google.com/headless** pakai akun Google kamu:
    - klik **Set up another computer** (Begin) → **Next** → **Authorize**.
-   - salin **kode** di dalam tanda kutip dari command yang ditampilkan (mulai dengan `4/...`).
+   - tab platform tidak masalah (CMD / PowerShell / Linux — kodenya sama); salin **kode** di dalam tanda kutip dari command yang ditampilkan (mulai dengan `4/...`).
+   - arahkan ke secret **`CRD_CODE`** (Settings → Secrets → Actions). **Kode sekali pakai & kadaluarsa cepat — set secret tepat sebelum run, lalu trigger segera.**
 
 3. Jalankan workflow (Tab **Actions** → **macOS - Chrome Remote Desktop** → **Run workflow**):
-   - `crd_code` → tempel kode dari langkah 2 (**berlaku singkat, ~beberapa menit** — jalankan segera).
    - `hostname` → opsional, nama host di app CRD (default `mac-<run_id>`).
    - `keep_alive_minutes` → default `355`.
 
@@ -46,12 +46,12 @@ Runner sifatnya **ephemeral**:
 
 | Nama | Jenis | Wajib? | Keterangan |
 |---|---|---|---|
+| `CRD_CODE` | Secret | Ya | Kode OAuth sekali pakai dari /headless (mulai `4/`, kadaluarsa cepat). |
 | `CRD_PIN` | Secret | Ya | PIN koneksi (angka 6+ digit). |
-| `crd_code` | Input trigger | Ya | Kode OAuth sekali pakai dari /headless (mulai `4/`, kadaluarsa cepat). |
 | `hostname` | Input trigger | Tidak | Nama host di app CRD (default `mac-<run_id>`). |
 | `keep_alive_minutes` | Input trigger | Tidak | Durasi job (default `355`, maks `355`). |
 
-> Kode `crd_code` **sekali pakai & cepat kadaluarsa**. Setiap run harus ambil kode baru dari halaman headless.
+> Kode `CRD_CODE` **sekali pakai & cepat kadaluarsa**. Setiap run harus ambil kode baru dari halaman headless dan perbarui secret-nya, lalu trigger segera.
 
 ## Susunan file
 
@@ -67,7 +67,7 @@ Checkout → validasi (`crd_code` & `CRD_PIN`) → setup CRD (install host + Lau
 
 ## Troubleshooting
 
-- **Run gagal "crd_code tidak valid"** → kode kadaluarsa; ambil kode baru di halaman headless, jalankan ulang.
+- **Run gagal "CRD_CODE tidak valid"** → kode kadaluarsa/terpakai; ambil kode baru di halaman headless, perbarui secret, jalankan ulang.
 - **Host tidak muncul di app CRD** → pastikan login akun sama dengan yang membuat kode; tunggu ~15–60 detik lalu refresh.
 - **Desktop hitam saat konek** → cek log step setup: baris `Screencapture test: N bytes` (N > 1000 = display OK). Kalau display OK tapi CRD hitam, kemungkinan isu rendering VM macOS 26; bisa dicoba ganti `runs-on` ke `macos-15` (image lama yang render normal).
 - **Runner lenyap** → VM ephemeral; setelah job selesai host ikut hilang.

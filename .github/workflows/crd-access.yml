@@ -3,9 +3,6 @@ name: macOS - Chrome Remote Desktop
 on:
   workflow_dispatch:
     inputs:
-      crd_code:
-        description: 'Kode OAuth sekali pakai dari remotedesktop.google.com/headless (mulai dengan "4/").'
-        required: true
       hostname:
         description: 'Nama host yang akan tampil di aplikasi Chrome Remote Desktop.'
         required: false
@@ -33,18 +30,18 @@ jobs:
 
       - name: Validate Configuration
         env:
-          CRD_CODE: ${{ inputs.crd_code }}
+          CRD_CODE: ${{ secrets.CRD_CODE }}
           CRD_PIN: ${{ secrets.CRD_PIN }}
         run: |
           set -u
           if [ -z "${CRD_CODE:-}" ]; then
-            echo "::error::Input crd_code kosong. Ambil kode dari https://remotedesktop.google.com/headless."
+            echo "::error::Secret CRD_CODE kosong. Ambil kode dari https://remotedesktop.google.com/headless lalu set secret."
             exit 1
           fi
           case "$CRD_CODE" in
             4/*) ;;
             *)
-              echo "::error::crd_code harus dimulai dengan '4/'. Dapatkan kode baru dari https://remotedesktop.google.com/headless."
+              echo "::error::CRD_CODE harus dimulai dengan '4/'. Dapatkan kode baru dari https://remotedesktop.google.com/headless."
               exit 1
               ;;
           esac
@@ -60,7 +57,7 @@ jobs:
 
       - name: Setup Chrome Remote Desktop
         env:
-          CRD_CODE: ${{ inputs.crd_code }}
+          CRD_CODE: ${{ secrets.CRD_CODE }}
           CRD_NAME: ${{ inputs.hostname || format('mac-{0}', github.run_id) }}
           CRD_PIN: ${{ secrets.CRD_PIN }}
           KEEP_ALIVE_MINUTES: ${{ inputs.keep_alive_minutes }}
