@@ -4,6 +4,10 @@ Akses GUI/terminal ke runner **`macos-latest`** (GitHub-hosted macOS, ephemeral)
 
 ## Status saat ini (2026-09-16)
 
+- **VNC via Tailscale — SUDAH DIPASANG & TERVERIFIKASI.** Workflow **`macOS - VNC via Tailscale`**
+  (`vnc-access.yml`) join ke tailnet, mengaktifkan Screen Sharing (legacy VNC) dengan password dari
+  secret `VNC_PASSWORD`, lalu keep-alive. Desktop macOS tampil/terkontrol dari aplikasi **bVNC**
+  (Android) lewat `vnc://runner@<ip-tailscale>:5900`.
 - **SSH via Tailscale — SUDAH DIPASANG.** Workflow **`macOS - SSH via Tailscale`**
   (`ssh-access.yml`) join ke tailnet kamu lalu mengaktifkan Remote Login (sshd), dan mencetak
   `ssh runner@<ip-tailscale>`. Gunakan ini untuk inspeksi macOS dari dalam (debug CRD, dll).
@@ -72,6 +76,45 @@ GitHub Runner macOS (macos-latest)          Mac / HP kamu
 
 > Job berhenti otomatis (~maks 6 jam). VM ephemeral → IP & node tailnet baru tiap run.
 
+## VNC via Tailscale (SUDAH AKTIF & TERVERIFIKASI)
+
+Workflow **`macOS - VNC via Tailscale`** (`vnc-access.yml`) menyalakan **Screen Sharing** bawaan
+macOS (legacy VNC, port `5900`) di runner — tanpa install app tambahan. Daemon `screensharingd`
+di-spawn ulang otomatis oleh launchd (socket activation) setiap kali ada koneksi masuk, jadi port
+5900 selalu siap meski daemon idle-exit setelah viewer terakhir putus.
+
+```
+GitHub Runner macOS (macos-latest)          HP / Mac kamu
+  - join tailnet (node mac-<run_id>)        - install app Tailscale & login ke tailnet yang sama
+  - kickstart: aktifkan Screen Sharing      - install app bVNC (Android; vnc:// militaris-style)
+  - set password VNC = secret VNC_PASSWORD  - connect ke vnc://runner@<ip-tailscale>:5900
+  - TCC: izin capture layar + keep awake    - masukkan password VNC_PASSWORD -> desktop tampil
+```
+
+### Secret yang dibutuhkan (VNC)
+
+| Nama | Jenis | Wajib? | Keterangan |
+|---|---|---|---|
+| `TAILSCALE_AUTHKEY` | Secret | Ya | Auth key dari https://login.tailscale.com/admin/settings/keys untuk tailnet kamu. |
+| `VNC_PASSWORD` | Secret | Ya | Password VNC (min 8 karakter, maks 8 karakter aktif yang dipakai VNC). |
+| `SSH_PUBLIC_KEY` | Secret | Opsional* | Dipakai step Tailscale (agar bisa SSH inspeksi). |
+| `MAC_USER_PASSWORD` | Secret | Opsional* | Password akun `runner` (fallback SSH). |
+
+### Cara pakai (client)
+
+1. **HP:** install **bVNC** (play store) + **Tailscale** (harus join ke tailnet yang sama dengan
+   pemilik authkey, mis. akun Google yang sama).
+2. Buka Actions → **macOS - VNC via Tailscale** → Run workflow.
+3. Lihat blok **`VNC READY`** di log step `Setup VNC` → catat `Host : <ip>:5900`.
+4. Di bVNC: **New Connection** → Host `<ip:5900>` (contoh `100.116.41.57:5900`) → username `runner`
+   (bebas) → password = nilai secret `VNC_PASSWORD` → protocol: pilih **VNC/Apple** (server menawarkan
+   Apple DH 30,33,36 + VNC autentikasi 2 — bVNC otomatis memilih yang cocok).
+5. Desktop macOS muncul & bisa dikendalikan (15 detik setelah viewer terputus, daemon exit & menunggu
+   koneksi baru — port tetap hidup via launchd).
+
+> **Catatan:** RealVNC Viewer **tidak didukung** oleh Server ini (menolak protocol `RFB 003.889`
+> Apple). Gunakan **bVNC** (Android) atau viewer lain yang menerima versi 3.889.
+
 ## Opsi CRD (disimpan)
 
 Workflow **`macOS - Chrome Remote Desktop`** (`crd-access.yml`) membereskan mekanisme CRD headless:
@@ -122,10 +165,12 @@ auth headless, verifikasi) → Keep Alive`.
 | File | Fungsi |
 |---|---|
 | `.github/workflows/ssh-access.yml` | Workflow SSH via Tailscale (validasi → join tailnet → Remote Login → keep-alive) |
+| `.github/workflows/vnc-access.yml` | Workflow VNC via Tailscale (validasi → Tailscale → Screen Sharing → keep-alive) |
 | `.github/workflows/crd-access.yml` | Workflow CRD (validasi → setup host → keep-alive) |
 | `scripts/ssh/tailscale_ssh.sh` | Install CLI Tailscale, `tailscaled` root, `tailscale up`, aktifkan sshd, set password/key, cetak `SSH READY` |
+| `scripts/vnc/setup_vnc.sh` | kickstart Screen Sharing (legacy VNC), set password, TCC capture layar, launchd socket activation, cetak `VNC READY` |
 | `scripts/crd/setup_crd.sh` | Install host, TCC izin layar, wake display, auth `remoting_start_host`, verifikasi |
-| `scripts/keep_alive.sh` | Loop keep-alive sampai batas waktu (menampilkan `TSIP`/hostname) |
+| `scripts/keep_alive.sh` | Loop keep-alive sampai batas waktu (menampilkan `TSIP`/`CRD_NAME`/`VNC_HOST`) |
 
 ## Troubleshooting
 
