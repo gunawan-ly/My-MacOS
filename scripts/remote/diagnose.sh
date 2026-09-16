@@ -58,7 +58,6 @@ fi
 log "=== Screencapture Test ==="
 screencapture -x /tmp/diag-screencapture.png 2>&1 || true
 if [ -f /tmp/diag-screencapture.png ]; then
-  local SC_SIZE
   SC_SIZE="$(stat -f%z /tmp/diag-screencapture.png 2>/dev/null || echo 0)"
   log "screencapture: ${SC_SIZE} bytes."
   if [ "${SC_SIZE:-0}" -lt 1000 ]; then
