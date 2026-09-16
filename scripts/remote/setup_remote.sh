@@ -1,16 +1,20 @@
 #!/usr/bin/env bash
-# Setup remote ala fastmac-gui (dikeckaan/MacOS-Workflow-VNC), dimodernisasi:
-# user baru vncuser (jalan pintas tembok SecureToken akun runner), password VNC
-# via file hash, tunnel ngrok untuk VNC, SSH via tmate (step workflow terpisah).
-# Env: VNC_PASS (dipakai untuk password login vncuser SEKALIGUS password VNC),
-#      NGROK_AUTH_TOKEN, KEEP_ALIVE_MINUTES.
+# Remote HP-ready: 1 password untuk SSH (user vncuser) + VNC via Tailscale.
+# Adaptasi dari dikeckaan/MacOS-Workflow-VNC (fastmac-gui): user baru vncuser
+# adalah jalan pintas tembok SecureToken akun runner (dscl passwd user baru
+# jalan sebagai root). ngrok/tmate DICOBA dan DIBUANG: ngrok TCP butuh
+# verifikasi kartu (ERR_NGROK_8013), DNS *.tmate.io diblokir di pool ini.
+# Env: VNC_PASS (password vncuser + VNC), TAILSCALE_AUTHKEY,
+#      SSH_PUBLIC_KEY (opsional, untuk debug pemilik repo), KEEP_ALIVE_MINUTES.
 set -uo pipefail
 
 VNC_PASS="${VNC_PASS:-}"
-NGROK_AUTH_TOKEN="${NGROK_AUTH_TOKEN:-}"
+TAILSCALE_AUTHKEY="${TAILSCALE_AUTHKEY:-}"
 KEEP_ALIVE_MINUTES="${KEEP_ALIVE_MINUTES:-355}"
 
 KC="/System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart"
+TCC_DB_USER="$HOME/Library/Application Support/com.apple.TCC/TCC.db"
+TCC_DB_SYSTEM="/Library/Application Support/com.apple.TCC/TCC.db"
 VNCUSER="vncuser"
 
 log() { printf '[setup-remote] %s\n' "$*"; }
@@ -33,6 +37,22 @@ run_bounded() {
     wait "$pid"; rc=$?
   fi
   return "$rc"
+}
+
+# Grant TCC schema-aware (BEST-EFFORT; di image ini SIP disabled jadi biasanya bisa).
+tcc_grant() {
+  local db="$1" svc="$2" client="$3" ctype="$4"
+  run_bounded 10 "sudo -n sqlite3 \"$db\" \"SELECT 1 FROM access LIMIT 1;\"" >/dev/null 2>&1 || return 0
+  local ncols
+  ncols="$(run_bounded 10 "sudo -n sqlite3 \"$db\" \"PRAGMA table_info(access);\"" 2>/dev/null | wc -l | tr -d ' ')"
+  ncols="${ncols:-0}"
+  local sql
+  if [ "$ncols" -le 10 ]; then
+    sql="INSERT OR REPLACE INTO access (service,client,client_type,auth_value,auth_reason,auth_version) VALUES('$svc','$client',$ctype,2,0,'1');"
+  else
+    sql="INSERT OR REPLACE INTO access (service,client,client_type,auth_value,auth_reason,auth_version,indirect_object_identifier_type,flags,placeholder) VALUES('$svc','$client',$ctype,2,0,'1',0,0,'UNUSED');"
+  fi
+  run_bounded 10 "sudo -n sqlite3 \"$db\" \"$sql\"" >/dev/null 2>&1 || true
 }
 
 create_vnc_user() {
@@ -71,13 +91,32 @@ create_vnc_user() {
   fi
 }
 
+# Pasang operator key (secret SSH_PUBLIC_KEY, bila ada) ke runner + vncuser
+# agar pemilik repo tetap bisa SSH langsung via Tailscale untuk debugging.
+install_operator_key() {
+  [ -z "${SSH_PUBLIC_KEY:-}" ] && return 0
+  local u home
+  for u in "$(id -un)" "$VNCUSER"; do
+    home="$(dscl . -read "/Users/$u" NFSHomeDirectory 2>/dev/null | awk '{print $2}')"
+    [ -z "$home" ] && continue
+    sudo -n install -d -m 700 "$home/.ssh" 2>/dev/null || continue
+    {
+      printf '%s\n' "$SSH_PUBLIC_KEY"
+      [ -f "$home/.ssh/authorized_keys" ] && cat "$home/.ssh/authorized_keys"
+    } 2>/dev/null | awk 'NF && !seen[$0]++' | sudo -n tee "$home/.ssh/authorized_keys" >/dev/null 2>&1 || continue
+    sudo -n chmod 600 "$home/.ssh/authorized_keys" 2>/dev/null || true
+    sudo -n chown -R "$u" "$home/.ssh" 2>/dev/null || sudo -n chown -R "$u:staff" "$home/.ssh" 2>/dev/null || true
+  done
+  log "Operator key terpasang (bila secret SSH_PUBLIC_KEY ada)."
+}
+
 enable_vnc() {
-  local pw="$1"
   log "Mengaktifkan Remote Login (sshd) + Screen Sharing (legacy VNC)..."
   run_bounded 30 'sudo -n systemsetup -setremotelogin on' >/dev/null 2>&1 || true
   run_bounded 15 'sudo -n launchctl enable system/com.openssh.sshd' >/dev/null 2>&1 || true
   run_bounded 15 'sudo -n launchctl kickstart -k system/com.openssh.sshd' >/dev/null 2>&1 || true
   run_bounded 10 'sudo -n dseditgroup -o edit -a vncuser -t user com.apple.access_ssh' >/dev/null 2>&1 || true
+  sleep 2
   run_bounded 30 "sudo -n \"$KC\" -configure -allowAccessFor -allUsers -privs -all" >/tmp/kc1.log 2>&1 || true
   run_bounded 30 "sudo -n \"$KC\" -configure -clientopts -setvnclegacy -vnclegacy yes" >/tmp/kc2.log 2>&1 || true
   # Password VNC via file hash (trik fastmac-gui; tak bergantung dialog TCC).
@@ -95,55 +134,30 @@ PY_EOF
   fi
   sudo -n install -m 600 -o root -g wheel /tmp/vnchash.txt /Library/Preferences/com.apple.VNCSettings.txt 2>/dev/null \
     || { sudo -n cp /tmp/vnchash.txt /Library/Preferences/com.apple.VNCSettings.txt 2>/dev/null && sudo -n chmod 600 /Library/Preferences/com.apple.VNCSettings.txt 2>/dev/null; } || return 1
-  rm -f /tmp/vnchash.txt
+  rm -f /tmp/vnchash.txt /tmp/vnchash.py
+  # TCC untuk Screen Sharing (best-effort).
+  local SS_APP="/System/Library/CoreServices/Screen Sharing.app/Contents/MacOS/Screen Sharing"
+  for db in "$TCC_DB_USER" "$TCC_DB_SYSTEM"; do
+    for client in com.apple.ScreenSharing com.apple.screensharing com.apple.RemoteDesktop; do
+      for svc in kTCCServiceScreenCapture kTCCServiceAccessibility; do
+        tcc_grant "$db" "$svc" "$client" 0
+      done
+    done
+    for svc in kTCCServiceScreenCapture kTCCServiceAccessibility; do
+      tcc_grant "$db" "$svc" "$SS_APP" 1
+    done
+  done
   run_bounded 30 "sudo -n \"$KC\" -restart -agent -console" >/tmp/kc3.log 2>&1 || true
   run_bounded 30 "sudo -n \"$KC\" -activate" >/tmp/kc4.log 2>&1 || true
   log "Screen Sharing aktif."
 }
 
-start_ngrok() {
-  log "Install ngrok (bila belum ada)..."
-  if ! command -v ngrok >/dev/null 2>&1; then
-    export HOMEBREW_NO_AUTO_UPDATE=1
-    if ! run_bounded 300 'brew install --cask ngrok' >/tmp/ngrok-install.log 2>&1; then
-      log "brew install ngrok gagal."
-      tail -10 /tmp/ngrok-install.log 2>/dev/null | sed 's/^/[ngrok] /' || true
-      return 1
-    fi
-  fi
-  export NGROK_TOKEN="$NGROK_AUTH_TOKEN"
-  run_bounded 30 'ngrok config add-authtoken "$NGROK_TOKEN"' >/dev/null 2>&1 \
-    || run_bounded 30 'ngrok authtoken "$NGROK_TOKEN"' >/dev/null 2>&1 || true
-  pkill -f 'ngrok tcp 5900' 2>/dev/null || true
-  nohup ngrok tcp 5900 >/tmp/ngrok.log 2>&1 &
-  sleep 3
-  local url="" i
-  for i in $(seq 1 20); do
-    url="$(curl -s --max-time 5 http://127.0.0.1:4040/api/tunnels 2>/dev/null | python3 -c "import json,sys; ts=json.load(sys.stdin).get('tunnels',[]); print(ts[0]['public_url'] if ts else '')" 2>/dev/null)"
-    [ -n "$url" ] && break
-    sleep 3
-  done
-  if [ -z "$url" ]; then
-    log "ngrok gagal (cek /tmp/ngrok.log) — kemungkinan akun butuh verifikasi kartu (ERR_NGROK_8013)."
-    tail -6 /tmp/ngrok.log 2>/dev/null | sed 's/^/[ngrok] /' || true
-    return 1
-  fi
-  NGROK_URL="$url"
-  log "ngrok: $NGROK_URL -> 5900"
-  if [ -n "${GITHUB_ENV:-}" ]; then
-    echo "NGROK_URL=$NGROK_URL" >> "$GITHUB_ENV"
-  fi
-}
-
-# Fallback bila ngrok menolak (mis. akun gratis tanpa verifikasi kartu):
-# VNC lewat Tailscale (butuh secret TAILSCALE_AUTHKEY). HP harus join tailnet
-# yang sama (atau pakai tmate untuk SSH yang selalu bisa).
-fallback_tailscale() {
+join_tailscale() {
   if [ -z "${TAILSCALE_AUTHKEY:-}" ]; then
-    log "GAGAL: ngrok gagal dan secret TAILSCALE_AUTHKEY kosong."
+    log "GAGAL: secret TAILSCALE_AUTHKEY kosong."
     return 1
   fi
-  log "Fallback: join tailnet via Tailscale..."
+  log "Join tailnet via Tailscale..."
   export HOMEBREW_NO_AUTO_UPDATE=1
   if ! command -v tailscale >/dev/null 2>&1; then
     run_bounded 300 'brew install tailscale' >/tmp/ts-install.log 2>&1 || return 1
@@ -165,69 +179,7 @@ fallback_tailscale() {
   fi
 }
 
-# tmate MANUAL (satu sesi; action-tmate detached memicu error server
-# "multi sessions is not supported"). Baris SSH dicetak via ::notice agar
-# terlihat LIVE di halaman run + di blok READY.
-start_tmate() {
-  export HOMEBREW_NO_AUTO_UPDATE=1
-  if ! command -v tmate >/dev/null 2>&1; then
-    log "Install tmate..."
-    if ! run_bounded 300 'brew install tmate' >/tmp/tmate-install.log 2>&1; then
-      log "brew install tmate gagal."
-      return 1
-    fi
-  fi
-  mkdir -p "$HOME/.ssh"
-  chmod 700 "$HOME/.ssh" 2>/dev/null || true
-  if [ ! -f "$HOME/.ssh/id_ed25519" ] && [ ! -f "$HOME/.ssh/id_rsa" ]; then
-    ssh-keygen -t ed25519 -f "$HOME/.ssh/id_ed25519" -N '' -C "tmate-runner" >/dev/null 2>&1 || true
-  fi
-  local SOCK=/tmp/tmate.sock
-  rm -f "$SOCK"
-  if ! run_bounded 60 "tmate -S $SOCK new-session -d 'sleep 21000'" >/tmp/tmate-new.log 2>&1; then
-    log "tmate new-session gagal:"
-    tail -5 /tmp/tmate-new.log 2>/dev/null | sed 's/^/[tmate] /' || true
-    return 1
-  fi
-  if ! run_bounded 90 "tmate -S $SOCK wait tmate-ready" >/tmp/tmate-wait.log 2>&1; then
-    log "tmate tidak ready:"
-    tail -5 /tmp/tmate-wait.log 2>/dev/null | sed 's/^/[tmate] /' || true
-    return 1
-  fi
-  TMATE_SSH="$(tmate -S "$SOCK" display -p '#{tmate_ssh}' 2>/dev/null)"
-  TMATE_WEB="$(tmate -S "$SOCK" display -p '#{tmate_web}' 2>/dev/null)"
-  if [ -z "$TMATE_SSH" ]; then
-    log "GAGAL membaca alamat tmate."
-    return 1
-  fi
-  echo "::notice title=TMATE-SSH::$TMATE_SSH"
-  [ -n "$TMATE_WEB" ] && echo "::notice title=TMATE-WEB::$TMATE_WEB"
-  log "tmate siap: $TMATE_SSH"
-  if [ -n "${GITHUB_ENV:-}" ]; then
-    echo "TMATE_SSH=$TMATE_SSH" >> "$GITHUB_ENV"
-    echo "TMATE_WEB=$TMATE_WEB" >> "$GITHUB_ENV"
-  fi
-}
-
-# Pasang operator key (secret SSH_PUBLIC_KEY, bila ada) ke runner + vncuser
-# agar pemilik repo tetap bisa SSH langsung via Tailscale untuk debugging.
-install_operator_key() {
-  [ -z "${SSH_PUBLIC_KEY:-}" ] && return 0
-  local u home
-  for u in "$(id -un)" "$VNCUSER"; do
-    home="$(dscl . -read "/Users/$u" NFSHomeDirectory 2>/dev/null | awk '{print $2}')"
-    [ -z "$home" ] && continue
-    sudo -n install -d -m 700 "$home/.ssh" 2>/dev/null || continue
-    {
-      printf '%s\n' "$SSH_PUBLIC_KEY"
-      [ -f "$home/.ssh/authorized_keys" ] && cat "$home/.ssh/authorized_keys"
-    } 2>/dev/null | awk 'NF && !seen[$0]++' | sudo -n tee "$home/.ssh/authorized_keys" >/dev/null 2>&1 || continue
-    sudo -n chmod 600 "$home/.ssh/authorized_keys" 2>/dev/null || true
-    sudo -n chown -R "$u" "$home/.ssh" 2>/dev/null || sudo -n chown -R "$u:staff" "$home/.ssh" 2>/dev/null || true
-  done
-  log "Operator key terpasang (bila secret SSH_PUBLIC_KEY ada)."
-}
-
+# Self-test framebuffer: vonis jujur DISPLAY-OK / NO-DISPLAY.
 check_framebuffer() {
   DISPLAY_OK=no
   local shot=/tmp/remote-selftest.png
@@ -242,7 +194,7 @@ check_framebuffer() {
       echo "::warning title=NO-DISPLAY::screencapture ${size} bytes (framebuffer kosong/hitam)"
     fi
   else
-    echo "::warning title=NO-DISPLAY::screencapture gagal — VM ini tidak punya display; VNC akan HITAM. SSH via tmate tetap bisa."
+    echo "::warning title=NO-DISPLAY::screencapture gagal — VM ini tidak punya display; VNC akan HITAM. SSH tetap bisa."
   fi
   log "Framebuffer display: $DISPLAY_OK"
 }
@@ -256,8 +208,8 @@ main() {
     log "VNC_PASS minimal 4 karakter; hentikan."
     exit 1
   fi
-  if [ -z "$NGROK_AUTH_TOKEN" ]; then
-    log "NGROK_AUTH_TOKEN kosong; hentikan."
+  if [ -z "$TAILSCALE_AUTHKEY" ]; then
+    log "TAILSCALE_AUTHKEY kosong; hentikan."
     exit 1
   fi
   log "macOS: $(sw_vers -productVersion 2>/dev/null || echo unknown) | user setup: $(id -un)"
@@ -265,10 +217,7 @@ main() {
   create_vnc_user "$VNC_PASS" || exit 1
   install_operator_key || true
   enable_vnc "$VNC_PASS" || exit 1
-  if ! start_ngrok; then
-    log "ngrok gagal — fallback ke Tailscale untuk VNC."
-    fallback_tailscale || exit 1
-  fi
+  join_tailscale || exit 1
 
   run_bounded 15 'sudo -n pmset -a displaysleep 0 sleep 0 disksleep 0' >/dev/null 2>&1 || true
   local SECONDS=$((KEEP_ALIVE_MINUTES * 60))
@@ -278,27 +227,18 @@ main() {
 
   check_framebuffer
 
-  start_tmate || echo "::warning::tmate gagal dimulai; SSH fallback via Tailscale secret bila ada."
-
   echo ""
   echo "===================================================================="
-  if [ -n "${NGROK_URL:-}" ]; then
-    echo " VNC READY (via ngrok, TANPA perlu Tailscale di HP)"
-    echo ""
-    echo "   Endpoint : $NGROK_URL"
-  else
-    echo " VNC READY (via Tailscale — ngrok butuh verifikasi kartu, fallback aktif)"
-    echo ""
-    echo "   Endpoint : ${TSIP:-<ip-tailscale>}:5900 (HP harus join tailnet yang sama)"
-  fi
-  echo "   User     : $VNCUSER  (atau runner, password sama)"
+  echo " REMOTE READY (1 password untuk SSH + VNC, via Tailscale)"
+  echo ""
+  echo "   IP       : ${TSIP:-<ip-tailscale>}"
+  echo "   SSH Termux : pkg install openssh -y   (aplikasi Tailscale HP harus ON)"
+  echo "                ssh vncuser@${TSIP:-<ip-tailscale>}   -> ketik password -> ENTER"
+  echo "   VNC (bVNC): ${TSIP:-<ip-tailscale>}:5900, user vncuser (atau runner)"
   echo "   Pass     : (nilai input password / secret VNC_PASSWORD)"
   echo "   Display  : ${DISPLAY_OK:-unknown} (lihat blok DISPLAY-OK / NO-DISPLAY)"
   echo ""
-  echo "   Client   : bVNC (Android). Host+port dari endpoint di atas."
-  echo "   SSH-tmate: ${TMATE_SSH:-<lihat notice TMATE-SSH di log>}"
-  echo "     Termux : pkg install openssh -y, tempel baris SSH di atas, ENTER."
-  [ -n "${TMATE_WEB:-}" ] && echo "   SSH-web  : $TMATE_WEB (terminal di browser HP)"
+  echo "   Node ini mati otomatis setelah keep-alive; IP baru tiap run."
   echo "===================================================================="
 }
 

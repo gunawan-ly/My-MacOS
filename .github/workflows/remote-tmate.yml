@@ -1,10 +1,9 @@
-name: macOS Remote (tmate + ngrok VNC)
+name: macOS Remote (HP-ready)
 
-# Akses termudah: SSH via tmate (tempel 1 baris di Termux, tanpa key/Tailscale)
-# + VNC via ngrok (alamat publik, tanpa Tailscale di HP).
-# Adaptasi modern dari dikeckaan/MacOS-Workflow-VNC (fastmac-gui):
-# user baru vncuser (jalan pintas tembok SecureToken akun runner),
-# password VNC via file hash, 1 password untuk SSH (vncuser) + VNC.
+# Akses termudah dari HP: 1 password untuk SSH (user vncuser) + VNC via Tailscale.
+# Adaptasi dari dikeckaan/MacOS-Workflow-VNC (fastmac-gui): user baru vncuser
+# adalah jalan pintas tembok SecureToken akun runner. (ngrok/tmate dicoba dan
+# dibuang: ngrok TCP butuh verifikasi kartu, DNS *.tmate.io diblokir di pool ini.)
 
 on:
   workflow_dispatch:
@@ -26,7 +25,7 @@ defaults:
 
 jobs:
   remote:
-    name: tmate + ngrok VNC on macos-latest
+    name: Remote HP-ready on macos-latest
     runs-on: macos-latest
     timeout-minutes: 360
 
@@ -36,20 +35,18 @@ jobs:
 
       - name: Validate Configuration
         env:
-          NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
+          TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
           VNC_PASSWORD: ${{ secrets.VNC_PASSWORD }}
           INPUT_PASSWORD: ${{ inputs.password }}
         run: |
           set -u
-          if [ -z "${NGROK_AUTH_TOKEN:-}" ]; then
-            echo "::error::Secret NGROK_AUTH_TOKEN belum dikonfigurasi."
+          if [ -z "${TAILSCALE_AUTHKEY:-}" ]; then
+            echo "::error::Secret TAILSCALE_AUTHKEY belum dikonfigurasi."
             exit 1
           fi
           if [ -n "${INPUT_PASSWORD:-}" ]; then
-            echo "REMOTE_PASS_SET=yes" >> "$GITHUB_ENV"
             echo "Password: dari input workflow."
           elif [ -n "${VNC_PASSWORD:-}" ]; then
-            echo "REMOTE_PASS_SET=yes" >> "$GITHUB_ENV"
             echo "Password: dari secret VNC_PASSWORD."
           else
             echo "::error::Isi input password ATAU secret VNC_PASSWORD."
@@ -57,15 +54,14 @@ jobs:
           fi
           echo "Configuration valid."
 
-      - name: Setup User + VNC + ngrok
+      - name: Setup User + VNC + Tailscale
         env:
           VNC_PASS: ${{ inputs.password != '' && inputs.password || secrets.VNC_PASSWORD }}
-          NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
           TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
           SSH_PUBLIC_KEY: ${{ secrets.SSH_PUBLIC_KEY }}
           KEEP_ALIVE_MINUTES: ${{ inputs.keep_alive_minutes }}
         run: |
-          bash scripts/remote/setup_tmate_vnc.sh
+          bash scripts/remote/setup_remote.sh
 
       - name: Keep Alive
         env:
