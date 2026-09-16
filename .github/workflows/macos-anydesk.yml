@@ -36,12 +36,22 @@ jobs:
           fi
           echo "AnyDesk configuration valid."
 
-      - name: Setup AnyDesk (install, password, alias)
+      - name: Install AnyDesk
+        run: |
+          bash scripts/anydesk/install_anydesk.sh
+
+      # Grant izin macOS TCC (layar, kontrol, dll) SEBELUM launch agar tidak
+      # muncul dialog modal yang membuat `open`/AnyDesk menggantung.
+      - name: Grant macOS Permissions (TCC)
+        run: |
+          bash scripts/anydesk/grant_tcc_permissions.sh
+
+      - name: Launch & Configure AnyDesk
         env:
           ANYDESK_PASSWORD: ${{ secrets.ANYDESK_PASSWORD }}
           ANYDESK_ALIAS: ${{ vars.ANYDESK_ALIAS }}
         run: |
-          bash scripts/anydesk/setup_anydesk.sh
+          bash scripts/anydesk/configure_anydesk.sh
 
       - name: Print AnyDesk Access Info
         run: |

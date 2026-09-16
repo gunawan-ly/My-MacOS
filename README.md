@@ -44,13 +44,17 @@ Runner sifatnya **ephemeral**:
 | File | Fungsi |
 |---|---|
 | `.github/workflows/macos-anydesk.yml` | Workflow Opsi 1 (AnyDesk) |
-| `scripts/anydesk/setup_anydesk.sh` | Install, launch, set password & alias AnyDesk |
+| `scripts/anydesk/install_anydesk.sh` | Install AnyDesk via Homebrew |
+| `scripts/anydesk/grant_tcc_permissions.sh` | Grant izin TCC macOS (layar, kontrol, FDA) sebelum launch |
+| `scripts/anydesk/configure_anydesk.sh` | Launch (anti-hang), tunggu ID, set password & alias |
 | `scripts/anydesk/print_access_info.sh` | Cetak blok `ANYDESK READY` + job summary |
 | `scripts/keep_alive.sh` | Loop keep-alive sampai batas waktu |
 
 ## Alur workflow
 
-Checkout → validasi secret → install + konfigurasi AnyDesk → cetak info akses → keep-alive.
+Checkout → validasi secret → install → grant izin TCC → launch & konfigurasi AnyDesk → cetak info akses → keep-alive.
+
+> Catatan: AnyDesk butuh izin macOS **Screen Recording** (lihat layar) dan **Accessibility** (control mouse/keyboard). Keduanya di-grant otomatis via TCC db sebelum AnyDesk dilaunch, supaya tidak ada dialog modal yang menggantungkan proses.
 
 ## Security
 
