@@ -34,10 +34,10 @@ get_id() {
 main() {
   # 1) Launch di GUI session. `open` diprioritaskan (biar attach ke WindowServer),
   #    dan dibatasi waktu. Fallback: eksekusi binary langsung (background).
-  if run_bounded 20 open -a AnyDesk >/dev/null 2>&1; then
+  if run_bounded 10 open -a AnyDesk >/dev/null 2>&1; then
     log "AnyDesk diluncurkan via launch services."
   else
-    log "open tidak selesai 20s / gagal; fallback eksekusi binary langsung."
+    log "open tidak selesai 10s / gagal; fallback eksekusi binary langsung."
     nohup "$BIN" >/dev/null 2>&1 &
   fi
 
@@ -61,7 +61,7 @@ main() {
   if [ -n "${ANYDESK_PASSWORD:-}" ]; then
     log "Mengatur password unattended access..."
     if run_bounded 20 \
-      'if sudo -n true 2>/dev/null; then printf "%s" "$ANYDESK_PASSWORD" | sudo -n "$BIN" --set-password; else printf "%s" "$ANYDESK_PASSWORD" | "$BIN" --set-password; fi' \
+      'if sudo -n true 2>/dev/null; then printf "%s\n" "$ANYDESK_PASSWORD" | sudo -n "$BIN" --set-password; else printf "%s\n" "$ANYDESK_PASSWORD" | "$BIN" --set-password; fi' \
       >/dev/null 2>&1; then
       log "Password berhasil di-set."
     else

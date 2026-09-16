@@ -2,6 +2,7 @@
 set -uo pipefail
 
 BIN="/Applications/AnyDesk.app/Contents/MacOS/AnyDesk"
+export BIN
 
 # Jalankan perintah CLI dengan batas waktu (mencegah hang).
 run_bounded() {
@@ -28,7 +29,8 @@ ID="$(run_bounded 5 'command "$BIN" --get-id 2>/dev/null' 2>/dev/null | tr -d '[
 STATUS="$(run_bounded 5 'command "$BIN" --get-status 2>/dev/null' 2>/dev/null | head -1)"
 VER="$(run_bounded 5 'command "$BIN" --version 2>/dev/null' 2>/dev/null | head -1)"
 
-ID="${ID:-UNKNOWN}"
+# Fallback ke ID yang sudah disimpan configure_anydesk.sh via GITHUB_ENV.
+ID="${ID:-${ANYDESK_ID:-UNKNOWN}}"
 STATUS="${STATUS:-UNKNOWN}"
 VER="${VER:-UNKNOWN}"
 
