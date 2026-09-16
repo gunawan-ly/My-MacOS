@@ -1,0 +1,96 @@
+name: macOS - Remote Access (Tailscale + VNC)
+
+on:
+  workflow_dispatch:
+    inputs:
+      keep_alive_minutes:
+        description: 'Durasi keep-alive dalam menit (maks 355).'
+        required: false
+        default: '355'
+      debug:
+        description: 'Jalankan diagnosa tambahan (Tailscale, port VNC, display).'
+        type: boolean
+        required: false
+        default: false
+
+run-name: 'macOS Remote ${{ github.run_id }}'
+
+jobs:
+  remote:
+    name: Tailscale + VNC on macos-latest
+    runs-on: macos-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      # Fail-fast: pastikan secret tersedia & valid. Nilai tidak pernah dicetak.
+      - name: Validate Remote Access Configuration
+        env:
+          TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
+          VNC_PASSWORD: ${{ secrets.VNC_PASSWORD }}
+          MAC_USER_PASSWORD: ${{ secrets.MAC_USER_PASSWORD }}
+        run: |
+          set -u
+          if [ -z "${TAILSCALE_AUTHKEY:-}" ]; then
+            echo "::error::Secret TAILSCALE_AUTHKEY belum dikonfigurasi (Settings > Secrets and variables > Actions)."
+            exit 1
+          fi
+          if [ -z "${VNC_PASSWORD:-}" ]; then
+            echo "::error::Secret VNC_PASSWORD belum dikonfigurasi."
+            exit 1
+          fi
+          if [[ "$VNC_PASSWORD" =~ [[:space:]] ]]; then
+            echo "::error::VNC_PASSWORD tidak boleh mengandung spasi."
+            exit 1
+          fi
+          if [ "${#VNC_PASSWORD}" -gt 8 ]; then
+            echo "::error::VNC_PASSWORD maksimal 8 karakter (legacy VNC password)."
+            exit 1
+          fi
+          if [ -z "${MAC_USER_PASSWORD:-}" ] || [ "${#MAC_USER_PASSWORD}" -lt 8 ]; then
+            echo "::error::Secret MAC_USER_PASSWORD harus minimal 8 karakter."
+            exit 1
+          fi
+          echo "Remote access configuration valid."
+
+      - name: Install & Join Tailscale
+        env:
+          TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
+          TS_HOSTNAME: mac-${{ github.run_id }}
+        run: |
+          bash scripts/remote/join_tailscale.sh
+
+      - name: Enable Screen Sharing (VNC)
+        env:
+          VNC_PASSWORD: ${{ secrets.VNC_PASSWORD }}
+          MAC_USER_PASSWORD: ${{ secrets.MAC_USER_PASSWORD }}
+          KEEP_ALIVE_MINUTES: ${{ inputs.keep_alive_minutes }}
+        run: |
+          bash scripts/remote/configure_vnc.sh
+
+      - name: Print VNC Access Info
+        env:
+          VNC_PASSWORD: ${{ secrets.VNC_PASSWORD }}
+          MAC_USER_PASSWORD: ${{ secrets.MAC_USER_PASSWORD }}
+          KEEP_ALIVE_MINUTES: ${{ inputs.keep_alive_minutes }}
+        run: |
+          bash scripts/remote/print_access_info.sh
+
+      - name: Diagnose (debug)
+        if: inputs.debug
+        run: |
+          set -x
+          sudo -n tailscale status || true
+          (exec 3<>/dev/tcp/127.0.0.1/5900) 2>/dev/null && echo "port 5900: OPEN" || echo "port 5900: CLOSED"
+          netstat -an | grep -E '\.5900 ' | head -5 || true
+          system_profiler SPDisplaysDataType 2>/dev/null | grep -E 'Resolution|Display Type|Online' | head -10 || true
+          printf 'console user: %s\n' "$(stat -f %Su /dev/console 2>/dev/null || echo n/a)"
+          pmset -g | grep -E 'sleep |displaysleep ' || true
+
+      - name: Keep Alive
+        env:
+          KEEP_ALIVE_MINUTES: ${{ inputs.keep_alive_minutes }}
+        run: |
+          bash scripts/keep_alive.sh

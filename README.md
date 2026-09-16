@@ -1,63 +1,73 @@
 # My-MacOS - Remote Access to macOS GitHub Runner
 
-Akses runner **`macos-latest`** (GitHub-hosted macOS) secara remote.
+Akses GUI runner **`macos-latest`** (GitHub-hosted macOS) secara remote via **Tailscale + Screen Sharing (VNC)**.
 
-- **Opsi 1: AnyDesk** (aktif) - koneksi melalui relay AnyDesk, tanpa membuka port publik.
-- Opsi berikutnya direncanakan masuk ke folder `scripts/<opsi>/` masing-masing.
+Runner macOS GitHub punya fitur native **Remote Login (SSH)** dan **Screen Sharing (VNC)**.
+Kita mengaktifkannya dan menghubungkannya ke **tailnet** sehingga bisa diakses langsung dari perangkat kamu, tanpa membuka port publik.
 
 ## Cara kerja
 
 ```
-PC CLIENT (AnyDesk di perangkat kamu)
+PC CLIENT (Mac/Windows/Linux + VNC viewer)
   |
- koneksi via relay AnyDesk, cari "Address ID"
+  v  (melalui tailnet, peer-to-peer)
+Tailscale network (100.x.x.x)
+  |
   v
 GitHub Runner macOS (macos-latest, ephemeral)
-  - AnyDesk diinstall & password unattended di-set
-  - Address ID dicetak di log / job summary
+  - tailscaled jalan di mode TUN
+  - Screen Sharing (ARD) aktif, VNC legacy password di-set
+  - password akun pengguna runner di-set
+  - display dijaga tetap menyala selama keep-alive
+  - alamat vnc://<tailscale-ip> dicetak di log / job summary
 ```
 
 Runner sifatnya **ephemeral**:
 
-- VM baru setiap run, jadi **Address ID berubah tiap run**.
+- VM baru setiap run → **IP tailnet baru** tiap run (hostname `mac-<run_id>`).
 - Job berhenti otomatis setelah ~6 jam (limit GitHub untuk macos runner).
 
 ## Mulai cepat (GitHub Actions)
 
 1. Di repo ini: **Settings → Secrets and variables → Actions**.
-   Tambahkan secret `ANYDESK_PASSWORD` (wajib, min. 8 karakter).
-   Opsional: variable `ANYDESK_ALIAS` untuk nama ramah Address ID.
-2. Buka tab **Actions** → pilih workflow **macOS - AnyDesk (Opsi 1)** → **Run workflow**.
-   Input `keep_alive_minutes` default `355`.
-3. Lihat log step **Print AnyDesk Access Info** → blok `ANYDESK READY` berisi **Address ID**.
-4. Di perangkat client: buka AnyDesk → ketik Address ID → **Accept and continue** → masukkan password dari secret `ANYDESK_PASSWORD`.
+   Tambahkan tiga secret:
+   - `TAILSCALE_AUTHKEY` — auth key dari https://login.tailscale.com/admin/settings/keys.
+   - `VNC_PASSWORD` — password VNC legacy, **maks. 8 karakter, tanpa spasi** (untuk klien VNC umum seperti Remmina/RealVNC).
+   - `MAC_USER_PASSWORD` — password akun `runner` built-in (untuk login lewat Apple Screen Sharing), min. 8 karakter.
+2. Buka tab **Actions** → pilih workflow **macOS - Remote Access (Tailscale + VNC)** → **Run workflow**.
+   Input `keep_alive_minutes` default `355`. Centang `debug` bila ingin diagnosa tambahan.
+3. Lihat log step **Print VNC Access Info** → blok `VNC READY` berisi alamat `vnc://<ip>`.
+4. Konek dari perangkat kamu:
+   - Mac: Finder → `Cmd+K` → `vnc://<ip>` → login `runner` + `MAC_USER_PASSWORD`.
+   - Klien VNC lain (Remmina/RealVNC/TightVNC): host `<ip>` port `5900` → password `VNC_PASSWORD`.
+
+> Catatan: Apple Screen Sharing biasanya meminta **akun macOS** (`runner` + `MAC_USER_PASSWORD`).
+> Klien VNC non-Apple memakai **VNC legacy password** (`VNC_PASSWORD`).
 
 ## Konfigurasi (Variables & Secrets)
 
 | Nama | Jenis | Wajib? | Keterangan |
 |---|---|---|---|
-| `ANYDESK_PASSWORD` | Secret | Ya | Password unattended access AnyDesk (min. 8 karakter). Tidak pernah ditulis di repo/log. |
-| `ANYDESK_ALIAS` | Variable | Tidak | Alias/nama ramah untuk Address ID. |
+| `TAILSCALE_AUTHKEY` | Secret | Ya | Auth key Tailscale untuk join tailnet. |
+| `VNC_PASSWORD` | Secret | Ya | VNC legacy password untuk klien VNC umum (maks. 8 karakter, tanpa spasi). |
+| `MAC_USER_PASSWORD` | Secret | Ya | Password akun `runner` untuk login Apple Screen Sharing (min. 8 karakter). |
 
 ## Susunan file
 
 | File | Fungsi |
 |---|---|
-| `.github/workflows/macos-anydesk.yml` | Workflow Opsi 1 (AnyDesk) |
-| `scripts/anydesk/install_anydesk.sh` | Install AnyDesk via Homebrew |
-| `scripts/anydesk/grant_tcc_permissions.sh` | Grant izin TCC macOS (layar, kontrol, FDA) sebelum launch |
-| `scripts/anydesk/configure_anydesk.sh` | Launch (anti-hang), tunggu ID, set password & alias |
-| `scripts/anydesk/print_access_info.sh` | Cetak blok `ANYDESK READY` + job summary |
+| `.github/workflows/macos-access.yml` | Workflow utama (Tailscale + VNC + keep-alive) |
+| `scripts/remote/join_tailscale.sh` | Install CLI, jalankan `tailscaled` (TUN), `tailscale up`, simpan IP ke GITHUB_ENV |
+| `scripts/remote/configure_vnc.sh` | Aktifkan Screen Sharing/ARD, set VNC password, set password akun, jaga display menyala |
+| `scripts/remote/print_access_info.sh` | Cetak blok `VNC READY` + job summary |
 | `scripts/keep_alive.sh` | Loop keep-alive sampai batas waktu |
 
 ## Alur workflow
 
-Checkout → validasi secret → install → grant izin TCC → launch & konfigurasi AnyDesk → cetak info akses → keep-alive.
-
-> Catatan: AnyDesk butuh izin macOS **Screen Recording** (lihat layar) dan **Accessibility** (control mouse/keyboard). Keduanya di-grant otomatis via TCC db sebelum AnyDesk dilaunch, supaya tidak ada dialog modal yang menggantungkan proses.
+Checkout → validasi secret → join tailnet → aktifkan Screen Sharing → cetak info akses → (diagnosa jika `debug`) → keep-alive.
 
 ## Security
 
-- Password hanya dari GitHub Secrets, lewat env, tidak pernah ditulis ke file/log.
-- Tanpa membuka port publik; koneksi lewat relay resmi AnyDesk.
+- Password & auth key hanya dari GitHub Secrets (lewat env), tanpa membuka port publik.
+- Koneksi lewat tailnet (peer-to-peer, terenkripsi); node `mac-<run_id>` otomatis masuk/keluar ikut kehadiran job.
 - Runner ephemeral: mesin lenyap setelah job selesai.
