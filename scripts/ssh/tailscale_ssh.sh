@@ -31,8 +31,9 @@ run_bounded() {
 start_tailscaled() {
   if ! sudo -n pgrep -x tailscaled >/dev/null 2>&1; then
     log "Memulai tailscaled (root)..."
-    sudo -n mkdir -p /var/lib/tailscale /var/run/tailscale
-    sudo -n bash -c 'nohup tailscaled --state=/var/lib/tailscale/tailscaled.state --socket=/var/run/tailscale/tailscaled.sock >/tmp/tailscaled.log 2>&1 &'
+    # Pakai path default (/var/run/tailscaled.socket & /Library/Tailscale)
+    # supaya konsisten dengan default yang dicari oleh CLI 'tailscale'.
+    sudo -n bash -c 'nohup tailscaled >/tmp/tailscaled.log 2>&1 &'
     sleep 3
     sudo -n pgrep -x tailscaled >/dev/null 2>&1 || {
       log "tailscaled tidak berjalan; log:"
