@@ -80,6 +80,65 @@ wake_display() {
   log "Display dijaga aktif selama ${KEEP_ALIVE_MINUTES} menit."
 }
 
+# Upaya menyediakan virtual display persisten (BetterDisplay) karena display
+# paravirtual bawaan VM bisa dilepas hypervisor kapan saja setelah provisioning
+# (terbukti: DISPLAY-OK saat setup, hilang ~10 mnt kemudian). Best-effort:
+# gagal = lanjut, gate check_framebuffer() yang memberi vonis final.
+install_virtual_display() {
+  export HOMEBREW_NO_AUTO_UPDATE=1
+  if [ ! -x /opt/homebrew/bin/betterdisplaycli ]; then
+    log "Install BetterDisplay (cask)..."
+    if ! run_bounded 300 'brew install --cask betterdisplay' >/tmp/bd-install.log 2>&1; then
+      log "brew cask betterdisplay gagal (lanjut tanpa virtual display)."
+      return 0
+    fi
+    run_bounded 120 'brew install waydabber/betterdisplay/betterdisplaycli' >/tmp/bdcli-install.log 2>&1 || true
+  fi
+  local BDCLI
+  BDCLI="$(ls /opt/homebrew/Cellar/betterdisplaycli/*/bin/betterdisplaycli 2>/dev/null | head -n1)"
+  if [ -z "$BDCLI" ]; then
+    log "betterdisplaycli tidak ketemu (lanjut tanpa virtual display)."
+    return 0
+  fi
+  # TCC untuk app (SIP disabled di image ini sehingga tulis sqlite3 langsung bisa).
+  local BID="pro.betterdisplay.BetterDisplay"
+  local BIN="/Applications/BetterDisplay.app/Contents/MacOS/BetterDisplay"
+  for db in "$TCC_DB_USER" "$TCC_DB_SYSTEM"; do
+    for svc in kTCCServiceScreenCapture kTCCServiceAccessibility; do
+      tcc_grant "$db" "$svc" "$BID" 0
+      tcc_grant "$db" "$svc" "$BIN" 1
+      tcc_grant "$db" "$svc" "/Applications/BetterDisplay.app" 1
+    done
+  done
+  defaults write pro.betterdisplay.BetterDisplay allowIntegration -bool true 2>/dev/null || true
+  # Jalankan persisten via LaunchAgent domain GUI agar dapat sesi WindowServer.
+  local UID_NUM PLIST
+  UID_NUM="$(id -u)"
+  PLIST="$HOME/Library/LaunchAgents/pro.betterdisplay.vnc.plist"
+  mkdir -p "$HOME/Library/LaunchAgents"
+  cat > "$PLIST" <<'PLIST_EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>pro.betterdisplay.vnc</string>
+<key>ProgramArguments</key><array><string>/Applications/BetterDisplay.app/Contents/MacOS/BetterDisplay</string></array>
+<key>RunAtLoad</key><true/>
+<key>KeepAlive</key><true/>
+<key>StandardOutPath</key><string>/tmp/bd-vnc.out</string>
+<key>StandardErrorPath</key><string>/tmp/bd-vnc.err</string>
+</dict></plist>
+PLIST_EOF
+  launchctl bootout "gui/$UID_NUM/pro.betterdisplay.vnc" 2>/dev/null || true
+  run_bounded 30 "launchctl bootstrap gui/$UID_NUM \"$PLIST\"" >/dev/null 2>&1 || true
+  sleep 10
+  run_bounded 60 "\"$BDCLI\" create -devicetype=virtualscreen -virtualscreenname=VNC-Stable -aspectWidth=16 -aspectHeight=9" >/tmp/bd-create.log 2>&1 || true
+  cat /tmp/bd-create.log 2>/dev/null | sed 's/^/[bd-create] /' | head -5 || true
+  run_bounded 60 "\"$BDCLI\" set -namelike=VNC-Stable -connected=on" >/tmp/bd-connect.log 2>&1 || true
+  cat /tmp/bd-connect.log 2>/dev/null | sed 's/^/[bd-connect] /' | head -5 || true
+  sleep 3
+  log "Upaya virtual display selesai (vonis final di gate framebuffer)."
+}
+
 # Self-test framebuffer: satu-satunya cara andal memastikan VNC tidak hitam.
 # Runner macOS bisa tidak punya display sama sekali (WindowServer -daemon,
 # IOFramebuffer kosong, `screencapture` gagal) — dalam kondisi itu VNC
@@ -144,7 +203,10 @@ main() {
   # 4) Jaga display menyala + wake.
   wake_display
 
-  # 4b) Gate framebuffer: pastikan ada yang bisa di-capture sebelum klaim READY.
+  # 4b) Coba sediakan virtual display persisten (best-effort; display bawaan VM bisa dilepas).
+  install_virtual_display
+
+  # 4c) Gate framebuffer: pastikan ada yang bisa di-capture sebelum klaim READY.
   check_framebuffer
 
   # 5) Verifikasi VNC listening di 5900.
