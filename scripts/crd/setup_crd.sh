@@ -6,11 +6,31 @@ CRD_NAME="${CRD_NAME:-mac-${GITHUB_RUN_ID:-runner}}"
 CRD_PIN="${CRD_PIN:-}"
 KEEP_ALIVE_MINUTES="${KEEP_ALIVE_MINUTES:-355}"
 
-APP="/Applications/Chrome Remote Desktop Host.app/Contents/MacOS/remoting_start_host"
 PLIST="/Library/LaunchAgents/org.chromium.chromoting.plist"
 CONFIG_FILE="/Library/PrivilegedHelperTools/org.chromium.chromoting.json"
 
 log() { printf '[setup-crd] %s\n' "$*"; }
+
+# Lokasi remoting_start_host berbeda-beda antar versi cask.
+# Coba kandidat umum dulu, lalu fallback find global.
+discover_start_host() {
+  local cand found
+  for cand in \
+    "/Applications/Chrome Remote Desktop.app/Contents/MacOS/remoting_start_host" \
+    "/Applications/Chrome Remote Desktop Host.app/Contents/MacOS/remoting_start_host" \
+    "/Applications/Chrome Remote Desktop Host.app/Contents/MacOS/remoting_start_host_service"; do
+    if [ -x "$cand" ]; then
+      printf '%s\n' "$cand"
+      return 0
+    fi
+  done
+  found="$(run_bounded 30 'find /Applications /Library/PrivilegedHelperTools -name remoting_start_host -type f 2>/dev/null | head -n 1')"
+  if [ -n "$found" ]; then
+    printf '%s\n' "$found"
+    return 0
+  fi
+  return 1
+}
 
 run_bounded() {
   local secs="$1" pid rc
@@ -102,8 +122,10 @@ main() {
   log "macOS: $(sw_vers -productVersion 2>/dev/null || echo unknown)"
   log "User : $USER_NAME | Host: $CRD_NAME"
 
-  # 1) Install Chrome Remote Desktop Host.
-  if [ -d "/Applications/Chrome Remote Desktop Host.app" ]; then
+  # 1) Install Chrome Remote Desktop Host (bila belum terpasang).
+  local APP
+  APP="$(discover_start_host)"
+  if [ -n "$APP" ]; then
     log "CRD Host sudah terpasang; skip install."
   else
     log "Menginstall Chrome Remote Desktop Host (brew cask)..."
@@ -113,11 +135,14 @@ main() {
       exit 1
     fi
     log "CRD Host berhasil diinstall."
+    APP="$(discover_start_host)"
   fi
-  if [ ! -x "$APP" ]; then
-    log "remoting_start_host tidak ditemukan ($APP); hentikan."
+  if [ -z "$APP" ]; then
+    log "remoting_start_host tidak ditemukan. Daftar isi /Applications:"
+    ls -1 /Applications 2>/dev/null | sed 's/^/  /' || true
     exit 1
   fi
+  log "remoting_start_host: $APP"
 
   # 2) Muat LaunchAgent host (setara login ulang).
   local UID_NUM
@@ -133,11 +158,14 @@ main() {
   # 3) TCC: izinkan akses layar ke host CRD.
   local TCC_DB_USER="$HOME/Library/Application Support/com.apple.TCC/TCC.db"
   local TCC_DB_SYSTEM="/Library/Application Support/com.apple.TCC/TCC.db"
+  local HOST_BIN
+  HOST_BIN="$(run_bounded 30 'find /Library/PrivilegedHelperTools -maxdepth 6 -type f -perm -111 2>/dev/null | grep -E "host(_service)?$" | head -n 1')"
   log "Grant TCC permissions ke CRD Host (user + system DB)..."
   for db in "$TCC_DB_USER" "$TCC_DB_SYSTEM"; do
     tcc_grant_multi "$db" "com.google.ChromeRemoteDesktopHost" 0
     tcc_grant_multi "$db" "com.google.chrome-remote-desktop-host" 0
     tcc_grant_multi "$db" "$APP" 1
+    [ -n "$HOST_BIN" ] && tcc_grant_multi "$db" "$HOST_BIN" 1
     tcc_grant_multi "$db" "/Applications/Chrome Remote Desktop Host.app/Contents/MacOS/chromoting" 1
   done
   sudo -n launchctl stop com.apple.TCC 2>/dev/null || true
@@ -152,7 +180,7 @@ main() {
   local AUTH_LOG=/tmp/crd-auth.log
   : > "$AUTH_LOG"
 
-  # 5a) Percobaan non-interaktif dengan --pin undefined document.
+  # 5a) Percobaan non-interaktif dengan --pin (undocumented, min 6 digit).
   if run_bounded 60 "\"$APP\" --code=\"$CRD_CODE\" --redirect-url='https://remotedesktop.google.com/_/oauthredirect' --name=\"$CRD_NAME\" --user-name=\"$USER_NAME\" --pin=\"$CRD_PIN\"" >>"$AUTH_LOG" 2>&1; then
     log "Auth OK (mode --pin)."
   else
