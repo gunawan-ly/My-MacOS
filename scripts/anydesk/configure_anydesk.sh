@@ -60,13 +60,22 @@ main() {
   # 3) Password unattended access (nilai tidak pernah di-log).
   if [ -n "${ANYDESK_PASSWORD:-}" ]; then
     log "Mengatur password unattended access..."
+    local pw_log
+    pw_log="$(mktemp)"
     if run_bounded 20 \
       'if sudo -n true 2>/dev/null; then printf "%s\n" "$ANYDESK_PASSWORD" | sudo -n "$BIN" --set-password; else printf "%s\n" "$ANYDESK_PASSWORD" | "$BIN" --set-password; fi' \
-      >/dev/null 2>&1; then
+      >"$pw_log" 2>&1; then
       log "Password berhasil di-set."
     else
-      log "Peringatan: perintah set-password gagal/tidak selesai (opsional)."
+      log "Peringatan: perintah set-password gagal/tidak selesai."
+      if [ -s "$pw_log" ]; then
+        log "Output AnyDesk (password di-redact):"
+        while IFS= read -r line; do
+          log "   $line"
+        done < <(perl -pe "s/\Q$ANYDESK_PASSWORD\E/[REDACTED]/g" "$pw_log")
+      fi
     fi
+    rm -f "$pw_log"
   fi
 
   # 4) Alias opsional (dari repository/org variable).
