@@ -1,0 +1,15 @@
+name: probe0
+on:
+  workflow_dispatch:
+    inputs:
+      keep_alive_minutes:
+        description: 'x'
+        required: false
+        default: '355'
+run-name: 'probe0 ${{ github.run_id }}'
+jobs:
+  p:
+    runs-on: macos-latest
+    timeout-minutes: 360
+    steps:
+      - run: echo ok
