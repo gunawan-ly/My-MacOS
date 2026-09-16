@@ -2,6 +2,7 @@
 set -uo pipefail
 
 BIN="/Applications/AnyDesk.app/Contents/MacOS/AnyDesk"
+export BIN
 
 log() { printf '[diag-anydesk] %s\n' "$*"; }
 
@@ -68,7 +69,7 @@ try_iteration() {
 }
 
 log "Uji set-password (password di-redact):"
-try_iteration "user+newline" 'printf "%s\n" "$ANYDESK_PASSWORD" | "$BIN" --set-password'
-try_iteration "sudo+newline" 'printf "%s\n" "$ANYDESK_PASSWORD" | sudo -n "$BIN" --set-password'
-try_iteration "user+arg    " '"$BIN" --set-password "$ANYDESK_PASSWORD"'
-try_iteration "sudo+arg    " 'sudo -n "$BIN" --set-password "$ANYDESK_PASSWORD"'
+try_iteration "user+newline  " 'printf "%s\n" "$ANYDESK_PASSWORD" | "$BIN" --set-password'
+try_iteration "docs-exact    " 'printf "%s\n" "$ANYDESK_PASSWORD" | sudo "$BIN" --set-password'
+try_iteration "user+arg      " '"$BIN" --set-password "$ANYDESK_PASSWORD"'
+try_iteration "docs-arg      " 'sudo "$BIN" --set-password "$ANYDESK_PASSWORD"'
