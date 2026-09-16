@@ -1,0 +1,79 @@
+name: macOS Remote (tmate + ngrok VNC)
+
+# Akses termudah: SSH via tmate (tempel 1 baris di Termux, tanpa key/Tailscale)
+# + VNC via ngrok (alamat publik, tanpa Tailscale di HP).
+# Adaptasi modern dari dikeckaan/MacOS-Workflow-VNC (fastmac-gui):
+# user baru vncuser (jalan pintas tembok SecureToken akun runner),
+# password VNC via file hash, 1 password untuk SSH (vncuser) + VNC.
+
+on:
+  workflow_dispatch:
+    inputs:
+      password:
+        description: 'Password untuk user vncuser (SSH) + VNC. Kosongkan = pakai secret VNC_PASSWORD.'
+        required: false
+        default: ''
+      keep_alive_minutes:
+        description: 'Durasi keep-alive dalam menit (maks 355).'
+        required: false
+        default: '355'
+
+run-name: 'Remote (${{ github.run_id }})'
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  remote:
+    name: tmate + ngrok VNC on macos-latest
+    runs-on: macos-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Validate Configuration
+        env:
+          NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
+          VNC_PASSWORD: ${{ secrets.VNC_PASSWORD }}
+          INPUT_PASSWORD: ${{ inputs.password }}
+        run: |
+          set -u
+          if [ -z "${NGROK_AUTH_TOKEN:-}" ]; then
+            echo "::error::Secret NGROK_AUTH_TOKEN belum dikonfigurasi."
+            exit 1
+          fi
+          if [ -n "${INPUT_PASSWORD:-}" ]; then
+            echo "REMOTE_PASS_SET=yes" >> "$GITHUB_ENV"
+            echo "Password: dari input workflow."
+          elif [ -n "${VNC_PASSWORD:-}" ]; then
+            echo "REMOTE_PASS_SET=yes" >> "$GITHUB_ENV"
+            echo "Password: dari secret VNC_PASSWORD."
+          else
+            echo "::error::Isi input password ATAU secret VNC_PASSWORD."
+            exit 1
+          fi
+          echo "Configuration valid."
+
+      - name: Setup User + VNC + ngrok
+        env:
+          VNC_PASS: ${{ inputs.password != '' && inputs.password || secrets.VNC_PASSWORD }}
+          NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
+          KEEP_ALIVE_MINUTES: ${{ inputs.keep_alive_minutes }}
+        run: |
+          bash scripts/remote/setup_tmate_vnc.sh
+
+      - name: Setup tmate session
+        uses: mxschmitt/action-tmate@v3
+        with:
+          limit-access-to-actor: false
+          detached: true
+        timeout-minutes: 5
+
+      - name: Keep Alive
+        env:
+          KEEP_ALIVE_MINUTES: ${{ inputs.keep_alive_minutes }}
+        run: |
+          bash scripts/keep_alive.sh
