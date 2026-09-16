@@ -7,6 +7,11 @@ on:
         description: 'Durasi keep-alive dalam menit (maks 355).'
         required: false
         default: '355'
+      run_diagnostics:
+        description: 'Jalankan diagnosa AnyDesk (debug set-password).'
+        type: boolean
+        required: false
+        default: false
 
 run-name: 'macOS AnyDesk ${{ github.run_id }}'
 
@@ -56,6 +61,13 @@ jobs:
       - name: Print AnyDesk Access Info
         run: |
           bash scripts/anydesk/print_access_info.sh
+
+      - name: Diagnose AnyDesk (debug)
+        if: inputs.run_diagnostics
+        env:
+          ANYDESK_PASSWORD: ${{ secrets.ANYDESK_PASSWORD }}
+        run: |
+          bash scripts/anydesk/diagnose_anydesk.sh
 
       - name: Keep Alive
         env:
