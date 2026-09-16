@@ -4,12 +4,12 @@ Akses GUI/terminal ke runner **`macos-latest`** (GitHub-hosted macOS, ephemeral)
 
 ## Status saat ini (2026-09-16)
 
+- **SSH via Tailscale — SUDAH DIPASANG.** Workflow **`macOS - SSH via Tailscale`**
+  (`ssh-access.yml`) join ke tailnet kamu lalu mengaktifkan Remote Login (sshd), dan mencetak
+  `ssh runner@<ip-tailscale>`. Gunakan ini untuk inspeksi macOS dari dalam (debug CRD, dll).
 - **CRD (Chrome Remote Desktop) — BELUM BERJALAN.** Ada kendala saat setup host (detail di
-  bawah). Kode disimpan & siap dilanjutkan begitu cara bypass-nya ketemu.
-- **Rencana berikutnya: SSH.** Kami akan menambahkan akses **SSH ke runner** supaya bisa
-  menginspeksi langsung dari dalam macOS (mis. cari binary mau di mana, jalankan perintah),
-  termasuk untuk menyelesaikan setup CRD. Rencananya memakai **tmate** (SSH publik instan,
-  tanpa akun/port) atau **Tailscale** (SSH via tailnet).
+  bawah). Kode disimpan & siap dilanjutkan begitu cara bypass-nya ketemu — bisa dituntaskan dari
+  dalam runner lewat SSH.
 
 ## Kendala CRD (kenapa belum jalan)
 
@@ -36,6 +36,41 @@ remotedesktop.google.com/access / /headless).
 - unduh DMG resmi (`https://dl.google.com/chrome-remote-desktop/chromeremotedesktop.dmg`), ekstrak,
   cari `remoting_start_host` di dalam `.pkg`/bundle, lalu jalankan auth headless
   (`--code ... --name ... --pin ... --redirect-url https://remotedesktop.google.com/_/oauthredirect`).
+
+## SSH via Tailscale (sudah aktif)
+
+Workflow **`macOS - SSH via Tailscale`** (`ssh-access.yml`) memberi akses terminal penuh ke runner:
+
+```
+GitHub Runner macOS (macos-latest)          Mac / HP kamu
+  - install tailscale CLI                   - install Tailscale & login ke tailnet yang sama
+  - join tailnet (node mac-<run_id>)        - ssh runner@<ip-tailscale>
+  - aktifkan Remote Login (sshd)            - login: public key atau password
+  - password runner di-set                  - langsung explorasi dari dalam
+```
+
+### Secret yang dibutuhkan (SSH)
+
+| Nama | Jenis | Wajib? | Keterangan |
+|---|---|---|---|
+| `TAILSCALE_AUTHKEY` | Secret | Ya | Auth key dari https://login.tailscale.com/admin/settings/keys untuk tailnet kamu. |
+| `MAC_USER_PASSWORD` | Secret | Opsional* | Password akun `runner` untuk login SSH (sudah ada; ≥8 karakter). |
+| `SSH_PUBLIC_KEY` | Secret | Opsional* | Publik key (mis. `ssh-ed25519 AAAA...`) milik Mac kamu → login tanpa password. |
+
+\* Setidaknya salah satu harus diisi agar bisa login: **public key lebih andal** di VM macOS
+(mengubah password via `dscl` kadang ditolak tanpa SecureToken). Ambil pubkey kamu dari Mac:
+`cat ~/.ssh/id_ed25519.pub` (atau `ssh-keygen -t ed25519` dulu bila belum punya) lalu
+`gh secret set SSH_PUBLIC_KEY -R gunawan-ly/My-MacOS`.
+
+### Cara pakai
+
+1. Pastikan Mac kamu **login ke tailnet yang sama** (Tailscale app aktif, akun sama dengan pemilik
+   `TAILSCALE_AUTHKEY`).
+2. Buka Actions → **macOS - SSH via Tailscale** → Run workflow (opsional ubah `keep_alive_minutes`).
+3. Lihat blok **`SSH READY`** di log step `Setup Tailscale + SSH` → paso `ssh runner@<ip>`.
+4. Di terminal Mac: `ssh runner@<ip>` lalu jawab prompt password (atau key).
+
+> Job berhenti otomatis (~maks 6 jam). VM ephemeral → IP & node tailnet baru tiap run.
 
 ## Opsi CRD (disimpan)
 
@@ -86,9 +121,11 @@ auth headless, verifikasi) → Keep Alive`.
 
 | File | Fungsi |
 |---|---|
+| `.github/workflows/ssh-access.yml` | Workflow SSH via Tailscale (validasi → join tailnet → Remote Login → keep-alive) |
 | `.github/workflows/crd-access.yml` | Workflow CRD (validasi → setup host → keep-alive) |
+| `scripts/ssh/tailscale_ssh.sh` | Install CLI Tailscale, `tailscaled` root, `tailscale up`, aktifkan sshd, set password/key, cetak `SSH READY` |
 | `scripts/crd/setup_crd.sh` | Install host, TCC izin layar, wake display, auth `remoting_start_host`, verifikasi |
-| `scripts/keep_alive.sh` | Loop keep-alive sampai batas waktu |
+| `scripts/keep_alive.sh` | Loop keep-alive sampai batas waktu (menampilkan `TSIP`/hostname) |
 
 ## Troubleshooting
 
@@ -102,7 +139,8 @@ auth headless, verifikasi) → Keep Alive`.
 
 ## Security
 
-- `crd_code` hanya OAuth sekali pakai berumur pendek; tidak disimpan permanen sebagai rahasia tetap.
-- PIN koneksi disimpan sebagai repo secret (`CRD_PIN`).
-- Akses ke host hanya lewat akun Google pemilik kode + PIN.
-- Runner ephemeral: mesin dan host CRD lenyap setelah job selesai.
+- `TAILSCALE_AUTHKEY` hanya dari repo secret; node `mac-<run_id>` ikut masuk/keluar tailnet bersama
+  job (ephemeral) — tidak membuka port publik.
+- SSH mendukung login **public key** atau password; koneksi lewat tailnet terenkripsi.
+- `CRD_CODE` adalah OAuth sekali pakai berumur pendek; `CRD_PIN` disimpan sebagai secret.
+- Runner ephemeral: mesin & node tailnet/host CRD lenyap setelah job selesai.

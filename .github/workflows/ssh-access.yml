@@ -1,0 +1,57 @@
+name: macOS - SSH via Tailscale
+
+on:
+  workflow_dispatch:
+    inputs:
+      keep_alive_minutes:
+        description: 'Durasi keep-alive dalam menit (maks 355).'
+        required: false
+        default: '355'
+
+run-name: 'SSH (${{ github.run_id }})'
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  ssh:
+    name: Tailscale + SSH on macos-latest
+    runs-on: macos-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Validate Configuration
+        env:
+          TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
+          SSH_PUBLIC_KEY: ${{ secrets.SSH_PUBLIC_KEY }}
+          MAC_USER_PASSWORD: ${{ secrets.MAC_USER_PASSWORD }}
+        run: |
+          set -u
+          if [ -z "${TAILSCALE_AUTHKEY:-}" ]; then
+            echo "::error::Secret TAILSCALE_AUTHKEY belum dikonfigurasi."
+            exit 1
+          fi
+          if [ -z "${SSH_PUBLIC_KEY:-}" ] && [ -z "${MAC_USER_PASSWORD:-}" ]; then
+            echo "::error::Set secret SSH_PUBLIC_KEY (public key) atau MAC_USER_PASSWORD (password) agar bisa login SSH."
+            exit 1
+          fi
+          echo "Configuration valid."
+
+      - name: Setup Tailscale + SSH
+        env:
+          TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
+          SSH_PUBLIC_KEY: ${{ secrets.SSH_PUBLIC_KEY }}
+          MAC_USER_PASSWORD: ${{ secrets.MAC_USER_PASSWORD }}
+          TS_HOSTNAME: mac-${{ github.run_id }}
+        run: |
+          bash scripts/ssh/tailscale_ssh.sh
+
+      - name: Keep Alive
+        env:
+          KEEP_ALIVE_MINUTES: ${{ inputs.keep_alive_minutes }}
+        run: |
+          bash scripts/keep_alive.sh

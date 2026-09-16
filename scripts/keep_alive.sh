@@ -15,8 +15,8 @@ for i in $(seq 1 "$STEPS"); do
   NOW="$(date '+%H:%M:%S')"
   ELAPSED=$((i * INTERVAL))
   REMAIN=$((MAX_SECONDS - ELAPSED))
-  printf "[step %s/%s] %s | host crd: %s | berjalan ~%dm, sisa ~%dm\n" \
-    "$i" "$STEPS" "$NOW" "${CRD_NAME:-N/A}" "$((ELAPSED / 60))" "$((REMAIN / 60))"
+  printf "[step %s/%s] %s | tsip: %s | crd: %s | berjalan ~%dm, sisa ~%dm\n" \
+    "$i" "$STEPS" "$NOW" "${TSIP:-N/A}" "${CRD_NAME:-N/A}" "$((ELAPSED / 60))" "$((REMAIN / 60))"
   sleep "$INTERVAL"
 done
 
