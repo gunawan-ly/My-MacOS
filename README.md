@@ -4,12 +4,15 @@ Akses GUI/terminal ke runner **`macos-latest`** (GitHub-hosted macOS, ephemeral)
 
 ## Status saat ini (2026-09-16)
 
-- **VNC via Tailscale — TERPASANG, TAPI LAYAR HITAM di pool saat ini.** Workflow **`macOS - VNC via Tailscale`**
+- **VNC via Tailscale — AKTIF + GATE DISPLAY-OK/NO-DISPLAY.** Workflow **`macOS - VNC via Tailscale`**
   (`vnc-access.yml`) join ke tailnet, mengaktifkan Screen Sharing (legacy VNC) dengan password dari
-  secret `VNC_PASSWORD`, lalu keep-alive. Koneksi + auth VNC **berhasil** (terverifikasi via handshake
-  RFB langsung: `RFB 003.889`, auth OK, frame 1024x768), tetapi **isi frame hitam total**
-  (brightness 0.0). Lihat "Layar hitam VNC" di bawah untuk akar masalah. Client tetap **bVNC**
-  (Android) lewat `vnc://runner@<ip-tailscale>:5900`.
+  secret `VNC_PASSWORD`, lalu keep-alive. Koneksi + auth VNC selalu OK (`RFB 003.889`); apakah desktop
+  tampil tergantung host: sebagian host pool **punya display** (terverifikasi E2E — gate
+  `screencapture` 169KB + screenshot desktop asli Activity Monitor), sebagian **tidak punya
+  framebuffer sama sekali** (WindowServer `-daemon`, `screencapture` gagal). `setup_vnc.sh` kini
+  mencetak `DISPLAY-OK` / `NO-DISPLAY` eksplisit di log + baris `Display :` di blok `VNC READY`,
+  sehingga tidak ada klaim semu. Client tetap **bVNC** (Android) lewat
+  `vnc://runner@<ip-tailscale>:5900`; jika `NO-DISPLAY`, pakai SSH.
 - **SSH via Tailscale — AKTIF & TERVERIFIKASI E2E.** Workflow **`macOS - SSH via Tailscale`**
   (`ssh-access.yml`) join ke tailnet kamu lalu mengaktifkan Remote Login (sshd), dan mencetak
   `ssh runner@<ip-tailscale>`. Login public key teruji konek dari luar (fingerprint key ikut dicetak
