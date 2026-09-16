@@ -66,13 +66,6 @@ jobs:
         run: |
           bash scripts/remote/setup_tmate_vnc.sh
 
-      - name: Setup tmate session
-        uses: mxschmitt/action-tmate@v3
-        with:
-          limit-access-to-actor: false
-          detached: true
-        timeout-minutes: 5
-
       - name: Keep Alive
         env:
           KEEP_ALIVE_MINUTES: ${{ inputs.keep_alive_minutes }}

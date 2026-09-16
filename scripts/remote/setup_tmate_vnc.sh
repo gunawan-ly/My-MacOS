@@ -161,6 +161,50 @@ fallback_tailscale() {
   fi
 }
 
+# tmate MANUAL (satu sesi; action-tmate detached memicu error server
+# "multi sessions is not supported"). Baris SSH dicetak via ::notice agar
+# terlihat LIVE di halaman run + di blok READY.
+start_tmate() {
+  export HOMEBREW_NO_AUTO_UPDATE=1
+  if ! command -v tmate >/dev/null 2>&1; then
+    log "Install tmate..."
+    if ! run_bounded 300 'brew install tmate' >/tmp/tmate-install.log 2>&1; then
+      log "brew install tmate gagal."
+      return 1
+    fi
+  fi
+  mkdir -p "$HOME/.ssh"
+  chmod 700 "$HOME/.ssh" 2>/dev/null || true
+  if [ ! -f "$HOME/.ssh/id_ed25519" ] && [ ! -f "$HOME/.ssh/id_rsa" ]; then
+    ssh-keygen -t ed25519 -f "$HOME/.ssh/id_ed25519" -N '' -C "tmate-runner" >/dev/null 2>&1 || true
+  fi
+  local SOCK=/tmp/tmate.sock
+  rm -f "$SOCK"
+  if ! run_bounded 60 "tmate -S $SOCK new-session -d 'sleep 21000'" >/tmp/tmate-new.log 2>&1; then
+    log "tmate new-session gagal:"
+    tail -5 /tmp/tmate-new.log 2>/dev/null | sed 's/^/[tmate] /' || true
+    return 1
+  fi
+  if ! run_bounded 90 "tmate -S $SOCK wait tmate-ready" >/tmp/tmate-wait.log 2>&1; then
+    log "tmate tidak ready:"
+    tail -5 /tmp/tmate-wait.log 2>/dev/null | sed 's/^/[tmate] /' || true
+    return 1
+  fi
+  TMATE_SSH="$(tmate -S "$SOCK" display -p '#{tmate_ssh}' 2>/dev/null)"
+  TMATE_WEB="$(tmate -S "$SOCK" display -p '#{tmate_web}' 2>/dev/null)"
+  if [ -z "$TMATE_SSH" ]; then
+    log "GAGAL membaca alamat tmate."
+    return 1
+  fi
+  echo "::notice title=TMATE-SSH::$TMATE_SSH"
+  [ -n "$TMATE_WEB" ] && echo "::notice title=TMATE-WEB::$TMATE_WEB"
+  log "tmate siap: $TMATE_SSH"
+  if [ -n "${GITHUB_ENV:-}" ]; then
+    echo "TMATE_SSH=$TMATE_SSH" >> "$GITHUB_ENV"
+    echo "TMATE_WEB=$TMATE_WEB" >> "$GITHUB_ENV"
+  fi
+}
+
 check_framebuffer() {
   DISPLAY_OK=no
   local shot=/tmp/remote-selftest.png
@@ -210,6 +254,8 @@ main() {
 
   check_framebuffer
 
+  start_tmate || echo "::warning::tmate gagal dimulai; SSH fallback via Tailscale secret bila ada."
+
   echo ""
   echo "===================================================================="
   if [ -n "${NGROK_URL:-}" ]; then
@@ -226,7 +272,9 @@ main() {
   echo "   Display  : ${DISPLAY_OK:-unknown} (lihat blok DISPLAY-OK / NO-DISPLAY)"
   echo ""
   echo "   Client   : bVNC (Android). Host+port dari endpoint di atas."
-  echo "   SSH      : lihat step tmate berikut (tempel baris ssh di Termux)."
+  echo "   SSH-tmate: ${TMATE_SSH:-<lihat notice TMATE-SSH di log>}"
+  echo "     Termux : pkg install openssh -y, tempel baris SSH di atas, ENTER."
+  [ -n "${TMATE_WEB:-}" ] && echo "   SSH-web  : $TMATE_WEB (terminal di browser HP)"
   echo "===================================================================="
 }
 
