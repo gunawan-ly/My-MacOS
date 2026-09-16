@@ -63,7 +63,7 @@ main() {
     local pw_log
     pw_log="$(mktemp)"
     if run_bounded 20 \
-      'if sudo -n true 2>/dev/null; then printf "%s\n" "$ANYDESK_PASSWORD" | sudo -n "$BIN" --set-password; else printf "%s\n" "$ANYDESK_PASSWORD" | "$BIN" --set-password; fi' \
+      'if printf "%s\n" "$ANYDESK_PASSWORD" | "$BIN" --set-password; then :; else printf "%s\n" "$ANYDESK_PASSWORD" | sudo -n "$BIN" --set-password; fi' \
       >"$pw_log" 2>&1; then
       log "Password berhasil di-set."
     else
