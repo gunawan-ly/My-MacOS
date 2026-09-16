@@ -17,7 +17,6 @@ run-name: 'CRD (${{ github.run_id }})'
 defaults:
   run:
     shell: bash
-    working-directory: ${{ github.workspace }}
 
 jobs:
   crd:
