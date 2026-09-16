@@ -6,11 +6,9 @@ MAC_USER_PASSWORD="${MAC_USER_PASSWORD:-}"
 KEEP_ALIVE_MINUTES="${KEEP_ALIVE_MINUTES:-355}"
 
 KICKSTART="/System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart"
-SCREENS_SHARING="/System/Library/LaunchDaemons/com.apple.screensharing.plist"
 
 log() { printf '[configure-vnc] %s\n' "$*"; }
 
-# Jalankan perintah dengan batas waktu; mencegah "gantung".
 run_bounded() {
   local secs="$1" pid rc
   shift
@@ -36,6 +34,42 @@ port_listening() {
   return 1
 }
 
+# Grant TCC ke satu service+client pada satu database.
+# Membaca skema tabel dulu supaya kolomcocok.
+tcc_grant() {
+  local db="$1" svc="$2" client="$3" ctype="$4"
+  # Cek apakah tabel ada
+  run_bounded 10 "sudo -n sqlite3 \"$db\" \"SELECT 1 FROM access LIMIT 1;\"" >/dev/null 2>&1 || return 0
+  # Baca jumlah kolom
+  local ncols
+  ncols="$(run_bounded 10 "sudo -n sqlite3 \"$db\" \"PRAGMA table_info(access);\"" 2>/dev/null | wc -l | tr -d ' ')"
+  ncols="${ncols:-0}"
+  local sql
+  if [ "$ncols" -le 10 ]; then
+    # Schema lama (≤10 kolom): tanpa kolom tambahan
+    sql="INSERT OR REPLACE INTO access (service,client,client_type,auth_value,auth_reason,auth_version) VALUES('$svc','$client',$ctype,2,0,'1');"
+  else
+    # Schema baru (>10 kolom, macOS 13+): isi kolom opsional dengan NULL/'UNUSED'/0
+    sql="INSERT OR REPLACE INTO access (service,client,client_type,auth_value,auth_reason,auth_version,indirect_object_identifier_type,flags,placeholder) VALUES('$svc','$client',$ctype,2,0,'1',0,0,'UNUSED');"
+  fi
+  run_bounded 10 "sudo -n sqlite3 \"$db\" \"$sql\"" >/dev/null 2>&1 || true
+}
+
+# Grant beberapa service TCC ke satu client.
+tcc_grant_multi() {
+  local db="$1" client="$2" ctype="$3"
+  local services=(
+    kTCCServiceAccessibility
+    kTCCServiceScreenCapture
+    kTCCServicePostEvent
+    kTCCServiceListenEvent
+    kTCCServiceAppleEvents
+  )
+  for svc in "${services[@]}"; do
+    tcc_grant "$db" "$svc" "$client" "$ctype"
+  done
+}
+
 main() {
   if [ -z "$VNC_PASSWORD" ] || [ -z "$MAC_USER_PASSWORD" ]; then
     log "Secret VNC_PASSWORD / MAC_USER_PASSWORD kosong; hentikan."
@@ -53,7 +87,11 @@ main() {
   local USER_NAME
   USER_NAME="$(id -un)"
 
-  # 1) Aktifkan Screen Sharing + ARD, set password VNC legacy (untuk klien VNC umum).
+  # Info dasar
+  log "macOS: $(sw_vers -productVersion 2>/dev/null || echo unknown)"
+  log "User : $USER_NAME"
+
+  # 1) Aktifkan Screen Sharing + ARD, set password VNC legacy.
   log "Mengaktifkan Screen Sharing (ARD kickstart)..."
   if run_bounded 60 "sudo -n \"$KICKSTART\" -activate -configure -access -on -users \"$USER_NAME\" -restart -agent -privs -all -clientopts -setvnclegacy -vnclegacy yes -setvncpw -vncpw \"$VNC_PASSWORD\"" >/tmp/kickstart.log 2>&1; then
     log "ARD kickstart OK."
@@ -63,82 +101,105 @@ main() {
     exit 1
   fi
 
-  # 2) Pastikan daemon screensharing aktif (fallback bila belum ter-load).
-  run_bounded 30 "sudo -n launchctl load -w \"$SCREENS_SHARING\"" >/dev/null 2>&1 || \
-    run_bounded 30 'sudo -n launchctl enable system/com.apple.screensharing && sudo -n launchctl bootstrap system /System/Library/LaunchDaemons/com.apple.screensharing.plist' >/dev/null 2>&1 || true
-  sleep 3
-
-  # 3) Grup akses screensharing: pastikan ada dan user masuk.
+  # 2) Grup akses screensharing.
   if ! run_bounded 10 "sudo -n dscl . -read /Groups/com.apple.access_screensharing" >/dev/null 2>&1; then
     run_bounded 10 "sudo -n dscl . -create /Groups/com.apple.access_screensharing" >/dev/null 2>&1 || true
   fi
   run_bounded 10 "sudo -n dseditgroup -o edit -a \"$USER_NAME\" -t user com.apple.access_screensharing" >/dev/null 2>&1 || true
-  log "Grup com.apple.access_screensharing dipastikan berisi $USER_NAME."
+  log "Grup screensharing OK."
 
-  # 4) TCC: grant Accessibility + Screen Recording ke screensharingd & ARDAgent.
-  #    Tanpa ini, VNC hanya bisa lihat (layar hitam) dan tidak bisa kontrol input.
-  local TCC_CLIENTS=(
-    "/usr/sbin/screensharingd"
-    "/System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/MacOS/ARDAgent"
-  )
-  local TCC_DB_USER="$HOME/Library/Application Support/com.apple.TCC/TCC.db"
-  local TCC_DB_SYSTEM="/Library/Application Support/com.apple.TCC/TCC.db"
-  local TCC_SERVICES=("kTCCServiceAccessibility" "kTCCServiceScreenCapture" "kTCCServiceSystemPolicyAllFiles")
-
-  for db in "$TCC_DB_USER" "$TCC_DB_SYSTEM"; do
-    for client in "${TCC_CLIENTS[@]}"; do
-      for svc in "${TCC_SERVICES[@]}"; do
-        run_bounded 10 "sudo -n sqlite3 \"$db\" \"INSERT OR REPLACE INTO access (service, client, client_type, auth_value, auth_reason, auth_version) VALUES ('$svc', '$client', 1, 2, 0, '1');\"" >/dev/null 2>&1 || true
-      done
-    done
-  done
-  # Restart TCC daemon agar perubahan terbaca.
-  sudo -n launchctl stop com.apple.TCC 2>/dev/null || true
-  sleep 1
-  log "TCC permissions granted ke screensharingd + ARDAgent (Accessibility, ScreenCapture, FDA)."
-
-  # 5) Set password akun pengguna (dipakai saat login melalui Apple Screen Sharing).
+  # 3) Set password akun pengguna.
   log "Mengatur password akun $USER_NAME..."
   if ! run_bounded 30 "sudo -n sysadminctl -resetPasswordFor \"$USER_NAME\" -newPassword \"$MAC_USER_PASSWORD\"" >/dev/null 2>&1; then
     log "sysadminctl gagal; fallback dscl passwd."
     run_bounded 30 "sudo -n dscl . -passwd /Users/\"$USER_NAME\" \"$MAC_USER_PASSWORD\"" >/dev/null 2>&1 || true
   fi
 
-  # 6) Firewall macOS (best-effort): kalau aktif, izinkan ARD/Screen Sharing.
+  # 4) TCC: grant ke SEMUA proses yang relevan.
+  #    client_type 0 = bundle ID, 1 = path.
+  local TCC_DB_USER="$HOME/Library/Application Support/com.apple.TCC/TCC.db"
+  local TCC_DB_SYSTEM="/Library/Application Support/com.apple.TCC/TCC.db"
+
+  log "Grant TCC permissions (user + system DB)..."
+  for db in "$TCC_DB_USER" "$TCC_DB_SYSTEM"; do
+    # Proses path-based (client_type=1)
+    tcc_grant_multi "$db" "/usr/sbin/screensharingd" 1
+    tcc_grant_multi "$db" "/System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/MacOS/ARDAgent" 1
+    tcc_grant_multi "$db" "/bin/bash" 1
+    tcc_grant_multi "$db" "/bin/zsh" 1
+
+    # Proses bundle-based (client_type=0)
+    tcc_grant_multi "$db" "com.apple.screensharing.agent" 0
+    tcc_grant_multi "$db" "com.apple.ScreenSharing" 0
+  done
+
+  # Restart TCC daemon agar perubahan terbaca.
+  sudo -n launchctl stop com.apple.TCC 2>/dev/null || true
+  sleep 2
+
+  # Verifikasi TCC grants
+  local tcc_count
+  tcc_count="$(run_bounded 10 "sudo -n sqlite3 \"$TCC_DB_USER\" \"SELECT COUNT(*) FROM access WHERE auth_value=2 AND (client LIKE '%screensharing%' OR client LIKE '%ARDAgent%' OR client LIKE '%bash%' OR client LIKE '%zsh%');\"" 2>/dev/null | tr -d '[:space:]')"
+  log "TCC auth_value=2 entries (user DB): ${tcc_count:-0}"
+
+  # 5) Restart screensharingd SETELAH TCC grants (agar daemon pick up permissions baru).
+  log "Me-restart screensharingd..."
+  sudo -n launchctl kickstart -k system/com.apple.screensharing 2>/dev/null || true
+  sleep 3
+
+  # 6) Firewall (best-effort).
   local FW
   FW="$(run_bounded 15 'sudo -n /usr/libexec/ApplicationFirewall/socketfilterfw --getglobalstate' 2>/dev/null | tr -d ' \n' || true)"
   if [[ "$FW" == *"State=Enabled"* ]]; then
-    log "Application Firewall aktif; menambahkan izin ARD/screensharingd."
-    run_bounded 15 "sudo -n /usr/libexec/ApplicationFirewall/socketfilterfw --add $KICKSTART" >/dev/null 2>&1 || true
+    log "Application Firewall aktif; menambahkan izin."
     run_bounded 15 "sudo -n /usr/libexec/ApplicationFirewall/socketfilterfw --add /usr/sbin/screensharingd" >/dev/null 2>&1 || true
-  else
-    log "Application Firewall tidak aktif; tidak perlu izin tambahan."
+    run_bounded 15 "sudo -n /usr/libexec/ApplicationFirewall/socketfilterfw --add \"$KICKSTART\"" >/dev/null 2>&1 || true
   fi
 
-  # 7) Jaga display tetap menyala (biar VNC tidak terlihat hitam) saat keep-alive.
+  # 7) Jaga display tetap menyala.
   run_bounded 15 'sudo -n pmset -a displaysleep 0 sleep 0 disksleep 0' >/dev/null 2>&1 || true
   local SECONDS=$((KEEP_ALIVE_MINUTES * 60))
   nohup caffeinate -dimsu -t "$SECONDS" >/dev/null 2>&1 &
   caffeinate -u -t 2 >/dev/null 2>&1 || true
   log "Display dijaga aktif selama ${KEEP_ALIVE_MINUTES} menit."
 
-  # 8) Wake display: buka Finder agar framebuffer tidak kosong (layar hitam di VNC).
+  # 8) Wake display secara agresif.
+  #    Virtual display di VM sering kali perlu "distur" agar mulai render.
   defaults write com.apple.screensaver idleTime 0 2>/dev/null || true
+  # Buka beberapa app GUI untuk force render ke framebuffer.
   open -a Finder 2>/dev/null || true
+  sleep 1
+  open -a "Terminal" 2>/dev/null || true
   open -a "Activity Monitor" 2>/dev/null || true
-  sleep 2
-  log "Display di-wake: Finder & Activity Monitor dibuka."
+  # Set wallpaper (force WindowServer render desktop).
+  local WALLPAPER="/System/Library/Desktop Pictures/Default Desktop Picture.png"
+  if [ -f "$WALLPAPER" ]; then
+    osascript -e "tell application \"System Events\" to tell desktop 1 to set picture to \"$WALLPAPER\"" 2>/dev/null || true
+  fi
+  # Nudge display awake.
+  caffeinate -u -t 5 2>/dev/null || true
+  sleep 3
+  log "Display di-wake: Terminal + Finder + Activity Monitor + wallpaper."
 
   # 9) Verifikasi port VNC.
-  sleep 2
   if port_listening 5900; then
     log "Port 5900 (VNC) LISTENING."
     echo "::notice title=VNC-PORT::port 5900 terbuka"
   else
-    log "Peringatan: port 5900 belum terdeteksi LISTENING; mungkin perlu beberapa detik."
+    log "Peringatan: port 5900 belum terdeteksi LISTENING."
   fi
 
-  log "Koneksi lokasi: vnc://${TSIP:-<tailscale-ip>} (user: $USER_NAME)."
+  # 10) Screencapture test (verifikasi display tidak hitam).
+  local sc_size=0
+  screencapture -x /tmp/vnc-selftest.png 2>/dev/null && sc_size="$(stat -f%z /tmp/vnc-selftest.png 2>/dev/null || echo 0)"
+  log "Screencapture test: ${sc_size} bytes."
+  if [ "${sc_size:-0}" -gt 1000 ]; then
+    echo "::notice title=DISPLAY-OK::screencapture ${sc_size} bytes (display aktif)"
+  else
+    echo "::warning title=DISPLAY-BLANK::screencapture ${sc_size} bytes (display mungkin kosong/hitam)"
+  fi
+
+  log "Koneksi: vnc://${TSIP:-<tailscale-ip>} user=$USER_NAME"
   log "Setup VNC selesai."
 }
 
