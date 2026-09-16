@@ -4,13 +4,16 @@ Akses GUI/terminal ke runner **`macos-latest`** (GitHub-hosted macOS, ephemeral)
 
 ## Status saat ini (2026-09-16)
 
-- **VNC via Tailscale — SUDAH DIPASANG & TERVERIFIKASI.** Workflow **`macOS - VNC via Tailscale`**
+- **VNC via Tailscale — TERPASANG, TAPI LAYAR HITAM di pool saat ini.** Workflow **`macOS - VNC via Tailscale`**
   (`vnc-access.yml`) join ke tailnet, mengaktifkan Screen Sharing (legacy VNC) dengan password dari
-  secret `VNC_PASSWORD`, lalu keep-alive. Desktop macOS tampil/terkontrol dari aplikasi **bVNC**
+  secret `VNC_PASSWORD`, lalu keep-alive. Koneksi + auth VNC **berhasil** (terverifikasi via handshake
+  RFB langsung: `RFB 003.889`, auth OK, frame 1024x768), tetapi **isi frame hitam total**
+  (brightness 0.0). Lihat "Layar hitam VNC" di bawah untuk akar masalah. Client tetap **bVNC**
   (Android) lewat `vnc://runner@<ip-tailscale>:5900`.
-- **SSH via Tailscale — SUDAH DIPASANG.** Workflow **`macOS - SSH via Tailscale`**
+- **SSH via Tailscale — AKTIF & TERVERIFIKASI E2E.** Workflow **`macOS - SSH via Tailscale`**
   (`ssh-access.yml`) join ke tailnet kamu lalu mengaktifkan Remote Login (sshd), dan mencetak
-  `ssh runner@<ip-tailscale>`. Gunakan ini untuk inspeksi macOS dari dalam (debug CRD, dll).
+  `ssh runner@<ip-tailscale>`. Login public key teruji konek dari luar (fingerprint key ikut dicetak
+  di log untuk dicocokkan). Gunakan ini untuk inspeksi macOS dari dalam (debug CRD, dll).
 - **CRD (Chrome Remote Desktop) — BELUM BERJALAN.** Ada kendala saat setup host (detail di
   bawah). Kode disimpan & siap dilanjutkan begitu cara bypass-nya ketemu — bisa dituntaskan dari
   dalam runner lewat SSH.
@@ -40,6 +43,25 @@ remotedesktop.google.com/access / /headless).
 - unduh DMG resmi (`https://dl.google.com/chrome-remote-desktop/chromeremotedesktop.dmg`), ekstrak,
   cari `remoting_start_host` di dalam `.pkg`/bundle, lalu jalankan auth headless
   (`--code ... --name ... --pin ... --redirect-url https://remotedesktop.google.com/_/oauthredirect`).
+
+## Layar hitam VNC (akar masalah, hasil riset SSH 2026-09-16)
+
+Investigasi dari dalam runner (`macos-latest`, macOS 26.6.2 ARM64, via SSH Tailscale) membuktikan
+layar hitam **bukan** soal izin Screen Recording:
+
+- `system_profiler SPDisplaysDataType` → kosong, `ioreg` tanpa `IODisplay`, **nol instance
+  `IOFramebuffer`**, WindowServer jalan mode `-daemon` (`display: null`).
+- `screencapture -x` → `could not create image from display`.
+- TCC `ScreenCapture`/`Accessibility` justru **sudah granted** (SIP image ini disabled).
+- VNC serve frame 1024x768 yang **hitam total** — Stack VNC-nya sehat, framebuffer-nya yang kosong.
+
+Upaya virtual display via BetterDisplay (install + TCC grant + LaunchAgent `gui/501` + CLI
+`create -devicetype=virtualscreen ...`): virtual screen **tercatat di prefs app** (`connected=1`,
+ada ICC profile), tetapi WindowServer `-daemon` menolak (`Invalid display`, tanpa GPU/framebuffer)
+sehingga tidak pernah online. Kesimpulan: desktop Aqua tidak bisa ditangkap di VM pool ini sampai
+GitHub menyediakan display/GPU virtual. `setup_vnc.sh` sekarang punya **gate `check_framebuffer()`**
+yang mencetak `DISPLAY-OK` / `NO-DISPLAY` eksplisit di log agar tidak ada klaim READY semu.
+Untuk kerja terminal, pakai SSH (terverifikasi).
 
 ## SSH via Tailscale (sudah aktif)
 

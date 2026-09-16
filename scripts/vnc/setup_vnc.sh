@@ -80,6 +80,30 @@ wake_display() {
   log "Display dijaga aktif selama ${KEEP_ALIVE_MINUTES} menit."
 }
 
+# Self-test framebuffer: satu-satunya cara andal memastikan VNC tidak hitam.
+# Runner macOS bisa tidak punya display sama sekali (WindowServer -daemon,
+# IOFramebuffer kosong, `screencapture` gagal) — dalam kondisi itu VNC
+# connect+auth tetap OK tapi layar selalu HITAM. Gate ini mencegah klaim
+# "VNC READY" yang menyesatkan.
+check_framebuffer() {
+  DISPLAY_OK=no
+  local shot=/tmp/vnc-selftest.png
+  rm -f "$shot"
+  if screencapture -x "$shot" 2>/dev/null && [ -f "$shot" ]; then
+    local size
+    size="$(stat -f%z "$shot" 2>/dev/null || echo 0)"
+    if [ "${size:-0}" -gt 1000 ]; then
+      DISPLAY_OK=yes
+      echo "::notice title=DISPLAY-OK::screencapture ${size} bytes (ada framebuffer, VNC bisa tampil)"
+    else
+      echo "::warning title=NO-DISPLAY::screencapture ${size} bytes (framebuffer kosong/hitam)"
+    fi
+  else
+    echo "::warning title=NO-DISPLAY::screencapture gagal (could not create image from display) — VM ini tidak punya display; VNC akan tampil HITAM. Gunakan SSH untuk akses terminal."
+  fi
+  log "Framebuffer display: $DISPLAY_OK"
+}
+
 main() {
   if [ -z "$VNC_PASSWORD" ]; then
     log "VNC_PASSWORD kosong; hentikan."
@@ -120,6 +144,9 @@ main() {
   # 4) Jaga display menyala + wake.
   wake_display
 
+  # 4b) Gate framebuffer: pastikan ada yang bisa di-capture sebelum klaim READY.
+  check_framebuffer
+
   # 5) Verifikasi VNC listening di 5900.
   sleep 3
   local PORT_OK=no
@@ -149,6 +176,7 @@ main() {
   echo "   Host : ${TSIP:-<ip-tailscale>}:5900   (VNC / RFB 003.889)"
   echo "   User : $(id -un)"
   echo "   Pass : (nilai secret VNC_PASSWORD, min 8 karakter)"
+  echo "   Display : ${DISPLAY_OK:-unknown} (lihat blok DISPLAY-OK / NO-DISPLAY di log)"
   echo ""
   echo "   Client : bVNC (Android) / RealVNC Viewer TIDAK didukung (versi 3.889)"
   echo "   Catat  : HP harus join ke TAILNET yang sama (node pemilik authkey)."

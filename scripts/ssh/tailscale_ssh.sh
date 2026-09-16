@@ -81,6 +81,9 @@ enable_ssh() {
     sudo -n chmod 600 "/Users/$USER_NAME/.ssh/authorized_keys"
     sudo -n chown -R "$USER_NAME":staff "/Users/$USER_NAME/.ssh"
     log "Public key terpasang."
+    # Cetak fingerprint (aman, bukan secret) agar mudah dicocokkan dengan
+    # `ssh-keygen -l -f <key>.pub` di sisi client saat auth gagal.
+    log "Fingerprint authorized_keys: $(sudo -n ssh-keygen -l -f "/Users/$USER_NAME/.ssh/authorized_keys" 2>/dev/null | head -n1 || echo n/a)"
   fi
 
   log "Remote Login aktif untuk user $USER_NAME."
