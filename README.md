@@ -17,6 +17,12 @@ Akses GUI/terminal ke runner **`macos-latest`** (GitHub-hosted macOS, ephemeral)
   (`ssh-access.yml`) join ke tailnet kamu lalu mengaktifkan Remote Login (sshd), dan mencetak
   `ssh runner@<ip-tailscale>`. Login public key teruji konek dari luar (fingerprint key ikut dicetak
   di log untuk dicocokkan). Gunakan ini untuk inspeksi macOS dari dalam (debug CRD, dll).
+- **Remote HP-ready — AKTIF & TERVERIFIKASI E2E (Termux, tanpa key).** Workflow
+  **`macOS Remote (HP-ready)`** (`remote-tmate.yml`): bikin user `vncuser` (jalan pintas tembok
+  SecureToken akun `runner`, adaptasi dari `dikeckaan/MacOS-Workflow-VNC`), 1 password untuk SSH +
+  VNC, join tailnet. Login `vncuser` + password **teruji konek dari luar** (grup: admin,
+  `access_ssh`, `access_screensharing). Lihat "Remote dari HP" di bawah. (ngrok/tmate dicoba dan
+  dibuang: ngrok TCP butuh verifikasi kartu, DNS `*.tmate.io` diblokir di pool ini.)
 - **CRD (Chrome Remote Desktop) — BELUM BERJALAN.** Ada kendala saat setup host (detail di
   bawah). Kode disimpan & siap dilanjutkan begitu cara bypass-nya ketemu — bisa dituntaskan dari
   dalam runner lewat SSH.
@@ -65,6 +71,24 @@ sehingga tidak pernah online. Kesimpulan: desktop Aqua tidak bisa ditangkap di V
 GitHub menyediakan display/GPU virtual. `setup_vnc.sh` sekarang punya **gate `check_framebuffer()`**
 yang mencetak `DISPLAY-OK` / `NO-DISPLAY` eksplisit di log agar tidak ada klaim READY semu.
 Untuk kerja terminal, pakai SSH (terverifikasi).
+
+## Remote dari HP (Termux, tanpa key, tanpa password ribet)
+
+Workflow **`macOS Remote (HP-ready)`** — cara pakai:
+
+1. (Opsional) Isi input `password` saat Run workflow. Kosongkan = pakai secret `VNC_PASSWORD`.
+   Password ini berlaku untuk **keduanya**: login SSH user `vncuser` + password VNC.
+2. Buka Actions → **macOS Remote (HP-ready)** → Run workflow → tunggu blok `REMOTE READY` di log,
+   catat IP-nya.
+3. Di Termux (aplikasi Tailscale HP harus ON + login tailnet yang sama):
+   ```
+   pkg install openssh -y
+   ssh vncuser@<ip-tailscale>
+   ```
+   Ketik password → ENTER → masuk. User `vncuser` adalah admin (bisa `sudo`, password sama).
+4. VNC: bVNC → host `<ip-tailscale>:5900`, user `vncuser` (atau `runner`), password sama.
+   Perhatikan baris `Display :` di log: `yes` = desktop tampil; `no` = host tak punya display
+   (cancel + run ulang untuk host baru, atau cukup pakai SSH).
 
 ## SSH via Tailscale (sudah aktif)
 
