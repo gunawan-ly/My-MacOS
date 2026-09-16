@@ -62,6 +62,7 @@ jobs:
           VNC_PASS: ${{ inputs.password != '' && inputs.password || secrets.VNC_PASSWORD }}
           NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
           TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
+          SSH_PUBLIC_KEY: ${{ secrets.SSH_PUBLIC_KEY }}
           KEEP_ALIVE_MINUTES: ${{ inputs.keep_alive_minutes }}
         run: |
           bash scripts/remote/setup_tmate_vnc.sh

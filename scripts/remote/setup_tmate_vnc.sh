@@ -73,7 +73,11 @@ create_vnc_user() {
 
 enable_vnc() {
   local pw="$1"
-  log "Mengaktifkan Screen Sharing (legacy VNC) via kickstart..."
+  log "Mengaktifkan Remote Login (sshd) + Screen Sharing (legacy VNC)..."
+  run_bounded 30 'sudo -n systemsetup -setremotelogin on' >/dev/null 2>&1 || true
+  run_bounded 15 'sudo -n launchctl enable system/com.openssh.sshd' >/dev/null 2>&1 || true
+  run_bounded 15 'sudo -n launchctl kickstart -k system/com.openssh.sshd' >/dev/null 2>&1 || true
+  run_bounded 10 'sudo -n dseditgroup -o edit -a vncuser -t user com.apple.access_ssh' >/dev/null 2>&1 || true
   run_bounded 30 "sudo -n \"$KC\" -configure -allowAccessFor -allUsers -privs -all" >/tmp/kc1.log 2>&1 || true
   run_bounded 30 "sudo -n \"$KC\" -configure -clientopts -setvnclegacy -vnclegacy yes" >/tmp/kc2.log 2>&1 || true
   # Password VNC via file hash (trik fastmac-gui; tak bergantung dialog TCC).
@@ -205,6 +209,25 @@ start_tmate() {
   fi
 }
 
+# Pasang operator key (secret SSH_PUBLIC_KEY, bila ada) ke runner + vncuser
+# agar pemilik repo tetap bisa SSH langsung via Tailscale untuk debugging.
+install_operator_key() {
+  [ -z "${SSH_PUBLIC_KEY:-}" ] && return 0
+  local u home
+  for u in "$(id -un)" "$VNCUSER"; do
+    home="$(dscl . -read "/Users/$u" NFSHomeDirectory 2>/dev/null | awk '{print $2}')"
+    [ -z "$home" ] && continue
+    sudo -n install -d -m 700 "$home/.ssh" 2>/dev/null || continue
+    {
+      printf '%s\n' "$SSH_PUBLIC_KEY"
+      [ -f "$home/.ssh/authorized_keys" ] && cat "$home/.ssh/authorized_keys"
+    } 2>/dev/null | awk 'NF && !seen[$0]++' | sudo -n tee "$home/.ssh/authorized_keys" >/dev/null 2>&1 || continue
+    sudo -n chmod 600 "$home/.ssh/authorized_keys" 2>/dev/null || true
+    sudo -n chown -R "$u" "$home/.ssh" 2>/dev/null || sudo -n chown -R "$u:staff" "$home/.ssh" 2>/dev/null || true
+  done
+  log "Operator key terpasang (bila secret SSH_PUBLIC_KEY ada)."
+}
+
 check_framebuffer() {
   DISPLAY_OK=no
   local shot=/tmp/remote-selftest.png
@@ -240,6 +263,7 @@ main() {
   log "macOS: $(sw_vers -productVersion 2>/dev/null || echo unknown) | user setup: $(id -un)"
 
   create_vnc_user "$VNC_PASS" || exit 1
+  install_operator_key || true
   enable_vnc "$VNC_PASS" || exit 1
   if ! start_ngrok; then
     log "ngrok gagal — fallback ke Tailscale untuk VNC."
