@@ -35,11 +35,14 @@ jobs:
             echo "::error::Secret TAILSCALE_AUTHKEY belum dikonfigurasi."
             exit 1
           fi
-          if [ -z "${SSH_PUBLIC_KEY:-}" ] && [ -z "${MAC_USER_PASSWORD:-}" ]; then
-            echo "::error::Set secret SSH_PUBLIC_KEY (public key) atau MAC_USER_PASSWORD (password) agar bisa login SSH."
-            exit 1
+          if [ -z "${SSH_PUBLIC_KEY:-}" ] && [ -n "${MAC_USER_PASSWORD:-}" ]; then
+            echo "Configuration valid (login password via secret)."
+          elif [ -n "${SSH_PUBLIC_KEY:-}" ]; then
+            echo "Configuration valid (login public key)."
+          else
+            echo "::warning::Secret SSH_PUBLIC_KEY/MAC_USER_PASSWORD kosong — lanjut MODE TERBUKA (login paling gampang, hanya via tailnet)."
+            echo "Configuration valid (mode terbuka)."
           fi
-          echo "Configuration valid."
 
       - name: Setup Tailscale + SSH
         env:

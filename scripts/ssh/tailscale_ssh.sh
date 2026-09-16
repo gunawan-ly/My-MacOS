@@ -89,6 +89,69 @@ enable_ssh() {
   log "Remote Login aktif untuk user $USER_NAME."
 }
 
+# Mode TERBUKA untuk client simpel (mis. Termux di Android): tanpa key, tanpa
+# password ribet. Tangga: (1) password kosong + PermitEmptyPasswords,
+# (2) password trivial tetap `runner`, (3) bila keduanya gagal, andalkan
+# key/password dari secret seperti biasa. sshd hanya terjangkau via tailnet.
+enable_open_ssh() {
+  # NOTE: OPEN_MODE/OPEN_PW sengaja GLOBAL (dibaca blok SSH READY di main).
+  local USER_NAME
+  USER_NAME="$(id -un)"
+  OPEN_MODE=no
+  OPEN_PW=""
+
+  # 1) Pastikan sshd mengizinkan login password (termasuk password kosong).
+  if [ -f /etc/ssh/sshd_config ]; then
+    sudo -n cp -n /etc/ssh/sshd_config /etc/ssh/sshd_config.bak 2>/dev/null || true
+    if grep -q -E '^[#]?PermitEmptyPasswords' /etc/ssh/sshd_config 2>/dev/null; then
+      sudo -n sed -i '' 's/^[#]*PermitEmptyPasswords.*/PermitEmptyPasswords yes/' /etc/ssh/sshd_config 2>/dev/null || true
+    else
+      printf '%s\n' "PermitEmptyPasswords yes" | sudo -n tee -a /etc/ssh/sshd_config >/dev/null 2>&1 || true
+    fi
+    if grep -q -E '^[#]?PasswordAuthentication' /etc/ssh/sshd_config 2>/dev/null; then
+      sudo -n sed -i '' 's/^[#]*PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config 2>/dev/null || true
+    else
+      printf '%s\n' "PasswordAuthentication yes" | sudo -n tee -a /etc/ssh/sshd_config >/dev/null 2>&1 || true
+    fi
+    run_bounded 15 'sudo -n launchctl kickstart -k system/com.openssh.sshd' >/dev/null 2>&1 || true
+    sleep 2
+  fi
+
+  # 2) Coba password kosong (verifikasi via dscl authonly, tanpa tebakan).
+  if run_bounded 30 "sudo -n sysadminctl -resetPasswordFor \"$USER_NAME\" -newPassword ''" >/dev/null 2>&1 \
+    || run_bounded 30 "sudo -n dscl . -passwd /Users/\"$USER_NAME\" ''" >/dev/null 2>&1 \
+    || true; then
+    if dscl . -authonly "$USER_NAME" '' >/dev/null 2>&1; then
+      OPEN_MODE=empty
+    fi
+  fi
+  if [ "$OPEN_MODE" = no ] && dscl . -authonly "$USER_NAME" '' >/dev/null 2>&1; then
+    OPEN_MODE=empty
+  fi
+
+  # 3) Fallback: password trivial tetap `runner`.
+  if [ "$OPEN_MODE" = no ]; then
+    if run_bounded 30 "sudo -n sysadminctl -resetPasswordFor \"$USER_NAME\" -newPassword 'runner'" >/dev/null 2>&1 \
+      || run_bounded 30 "sudo -n dscl . -passwd /Users/\"$USER_NAME\" 'runner'" >/dev/null 2>&1 \
+      || true; then
+      if dscl . -authonly "$USER_NAME" 'runner' >/dev/null 2>&1; then
+        OPEN_MODE=trivial
+        OPEN_PW="runner"
+      fi
+    fi
+    if [ "$OPEN_MODE" = no ] && dscl . -authonly "$USER_NAME" 'runner' >/dev/null 2>&1; then
+      OPEN_MODE=trivial
+      OPEN_PW="runner"
+    fi
+  fi
+
+  if [ -n "${GITHUB_ENV:-}" ]; then
+    echo "OPEN_MODE=$OPEN_MODE" >> "$GITHUB_ENV"
+    echo "OPEN_PW=$OPEN_PW" >> "$GITHUB_ENV"
+  fi
+  log "Mode terbuka: $OPEN_MODE"
+}
+
 main() {
   if [ -z "$TAILSCALE_AUTHKEY" ]; then
     log "TAILSCALE_AUTHKEY kosong; hentikan."
@@ -135,6 +198,10 @@ main() {
   # 4) Aktifkan SSH.
   enable_ssh
 
+  # 4b) Mode terbuka untuk client simpel (Termux). Best-effort; gagal = tetap
+  # andalkan key/password secret seperti biasa.
+  enable_open_ssh || true
+
   # 5) Ringkasan akses.
   echo ""
   echo "===================================================================="
@@ -146,6 +213,17 @@ main() {
     echo "   Auth : public key (~/.ssh/id_*.pub) milik pemilik secret SSH_PUBLIC_KEY"
   elif [ -n "$MAC_USER_PASSWORD" ]; then
     echo "   Auth : password akun runner (= nilai secret MAC_USER_PASSWORD)"
+  fi
+  if [ "${OPEN_MODE:-no}" = empty ]; then
+    echo ""
+    echo "   Termux TANPA password (ketik lalu ENTER saat diminta):"
+    echo "     pkg install openssh -y && ssh -o PreferredAuthentications=password -o PubkeyAuthentication=no runner@${TSIP:-<ip-tailscale>}"
+  elif [ "${OPEN_MODE:-no}" = trivial ]; then
+    echo ""
+    echo "   Termux SEKALI perintah (password trivial '${OPEN_PW:-runner}'):"
+    echo "     pkg install openssh sshpass -y && sshpass -p '${OPEN_PW:-runner}' ssh -o StrictHostKeyChecking=no runner@${TSIP:-<ip-tailscale>}"
+  elif [ -z "${SSH_PUBLIC_KEY:-}" ] && [ -z "${MAC_USER_PASSWORD:-}" ]; then
+    echo "::warning::Tidak ada metode login yang aktif (key kosong + mode terbuka gagal). Set secret SSH_PUBLIC_KEY lalu run ulang."
   fi
   echo "   Catat : perangkat kamu harus join ke TAILNET yang sama (node pemilik authkey)."
   echo "===================================================================="
