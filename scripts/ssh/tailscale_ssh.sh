@@ -58,8 +58,9 @@ enable_ssh() {
   local USER_NAME
   USER_NAME="$(id -un)"
 
-  # Login dengan password (best-effort; macOS 26 VM bisa menolak dscl tanpa SecureToken).
-  if [ -n "$MAC_USER_PASSWORD" ]; then
+  # Login dengan password hanya PAKAI BUNTUT bila tidak ada public key (macOS VM
+  # sering menolak dscl tanpa SecureToken sehingga password kerap gagal).
+  if [ -z "$SSH_PUBLIC_KEY" ] && [ -n "$MAC_USER_PASSWORD" ]; then
     log "Mengatur password akun $USER_NAME (best-effort)..."
     run_bounded 30 "sudo -n sysadminctl -resetPasswordFor \"$USER_NAME\" -newPassword \"$MAC_USER_PASSWORD\"" >/dev/null 2>&1 \
       || run_bounded 30 "sudo -n dscl . -passwd /Users/\"$USER_NAME\" \"$MAC_USER_PASSWORD\"" >/dev/null 2>&1 \
