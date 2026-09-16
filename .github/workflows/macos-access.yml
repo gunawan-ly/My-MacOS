@@ -88,6 +88,15 @@ jobs:
           system_profiler SPDisplaysDataType 2>/dev/null | grep -E 'Resolution|Display Type|Online' | head -10 || true
           printf 'console user: %s\n' "$(stat -f %Su /dev/console 2>/dev/null || echo n/a)"
           pmset -g | grep -E 'sleep |displaysleep ' || true
+          # TCC check
+          TCC_DB="$HOME/Library/Application Support/com.apple.TCC/TCC.db"
+          if [ -f "$TCC_DB" ]; then
+            echo "TCC Accessibility (screensharingd):"
+            sqlite3 "$TCC_DB" "SELECT service, client, auth_value FROM access WHERE client LIKE '%screensharingd%' OR client LIKE '%ARDAgent%';" 2>/dev/null || true
+          fi
+          # screencapture test
+          screencapture -x /tmp/vnc-test.png 2>/dev/null && printf 'screencapture bytes: %s\n' "$(stat -f%z /tmp/vnc-test.png 2>/dev/null)" || echo "screencapture FAILED"
+          ls -la ~/Library/Application\ Support/com.apple.TCC/TCC.db 2>/dev/null || true
 
       - name: Keep Alive
         env:

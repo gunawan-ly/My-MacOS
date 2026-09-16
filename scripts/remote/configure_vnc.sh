@@ -75,14 +75,36 @@ main() {
   run_bounded 10 "sudo -n dseditgroup -o edit -a \"$USER_NAME\" -t user com.apple.access_screensharing" >/dev/null 2>&1 || true
   log "Grup com.apple.access_screensharing dipastikan berisi $USER_NAME."
 
-  # 4) Set password akun pengguna (dipakai saat login melalui Apple Screen Sharing).
+  # 4) TCC: grant Accessibility + Screen Recording ke screensharingd & ARDAgent.
+  #    Tanpa ini, VNC hanya bisa lihat (layar hitam) dan tidak bisa kontrol input.
+  local TCC_CLIENTS=(
+    "/usr/sbin/screensharingd"
+    "/System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/MacOS/ARDAgent"
+  )
+  local TCC_DB_USER="$HOME/Library/Application Support/com.apple.TCC/TCC.db"
+  local TCC_DB_SYSTEM="/Library/Application Support/com.apple.TCC/TCC.db"
+  local TCC_SERVICES=("kTCCServiceAccessibility" "kTCCServiceScreenCapture" "kTCCServiceSystemPolicyAllFiles")
+
+  for db in "$TCC_DB_USER" "$TCC_DB_SYSTEM"; do
+    for client in "${TCC_CLIENTS[@]}"; do
+      for svc in "${TCC_SERVICES[@]}"; do
+        run_bounded 10 "sudo -n sqlite3 \"$db\" \"INSERT OR REPLACE INTO access (service, client, client_type, auth_value, auth_reason, auth_version) VALUES ('$svc', '$client', 1, 2, 0, '1');\"" >/dev/null 2>&1 || true
+      done
+    done
+  done
+  # Restart TCC daemon agar perubahan terbaca.
+  sudo -n launchctl stop com.apple.TCC 2>/dev/null || true
+  sleep 1
+  log "TCC permissions granted ke screensharingd + ARDAgent (Accessibility, ScreenCapture, FDA)."
+
+  # 5) Set password akun pengguna (dipakai saat login melalui Apple Screen Sharing).
   log "Mengatur password akun $USER_NAME..."
   if ! run_bounded 30 "sudo -n sysadminctl -resetPasswordFor \"$USER_NAME\" -newPassword \"$MAC_USER_PASSWORD\"" >/dev/null 2>&1; then
     log "sysadminctl gagal; fallback dscl passwd."
     run_bounded 30 "sudo -n dscl . -passwd /Users/\"$USER_NAME\" \"$MAC_USER_PASSWORD\"" >/dev/null 2>&1 || true
   fi
 
-  # 5) Firewall macOS (best-effort): kalau aktif, izinkan ARD/Screen Sharing.
+  # 6) Firewall macOS (best-effort): kalau aktif, izinkan ARD/Screen Sharing.
   local FW
   FW="$(run_bounded 15 'sudo -n /usr/libexec/ApplicationFirewall/socketfilterfw --getglobalstate' 2>/dev/null | tr -d ' \n' || true)"
   if [[ "$FW" == *"State=Enabled"* ]]; then
@@ -93,14 +115,21 @@ main() {
     log "Application Firewall tidak aktif; tidak perlu izin tambahan."
   fi
 
-  # 6) Jaga display tetap menyala (biar VNC tidak terlihat hitam) saat keep-alive.
+  # 7) Jaga display tetap menyala (biar VNC tidak terlihat hitam) saat keep-alive.
   run_bounded 15 'sudo -n pmset -a displaysleep 0 sleep 0 disksleep 0' >/dev/null 2>&1 || true
   local SECONDS=$((KEEP_ALIVE_MINUTES * 60))
   nohup caffeinate -dimsu -t "$SECONDS" >/dev/null 2>&1 &
   caffeinate -u -t 2 >/dev/null 2>&1 || true
   log "Display dijaga aktif selama ${KEEP_ALIVE_MINUTES} menit."
 
-  # 7) Verifikasi port VNC.
+  # 8) Wake display: buka Finder agar framebuffer tidak kosong (layar hitam di VNC).
+  defaults write com.apple.screensaver idleTime 0 2>/dev/null || true
+  open -a Finder 2>/dev/null || true
+  open -a "Activity Monitor" 2>/dev/null || true
+  sleep 2
+  log "Display di-wake: Finder & Activity Monitor dibuka."
+
+  # 9) Verifikasi port VNC.
   sleep 2
   if port_listening 5900; then
     log "Port 5900 (VNC) LISTENING."
