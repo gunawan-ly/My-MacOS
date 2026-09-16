@@ -120,14 +120,44 @@ start_ngrok() {
     sleep 3
   done
   if [ -z "$url" ]; then
-    log "GAGAL mendapatkan URL ngrok (cek /tmp/ngrok.log)."
-    tail -10 /tmp/ngrok.log 2>/dev/null | sed 's/^/[ngrok] /' || true
+    log "ngrok gagal (cek /tmp/ngrok.log) — kemungkinan akun butuh verifikasi kartu (ERR_NGROK_8013)."
+    tail -6 /tmp/ngrok.log 2>/dev/null | sed 's/^/[ngrok] /' || true
     return 1
   fi
   NGROK_URL="$url"
   log "ngrok: $NGROK_URL -> 5900"
   if [ -n "${GITHUB_ENV:-}" ]; then
     echo "NGROK_URL=$NGROK_URL" >> "$GITHUB_ENV"
+  fi
+}
+
+# Fallback bila ngrok menolak (mis. akun gratis tanpa verifikasi kartu):
+# VNC lewat Tailscale (butuh secret TAILSCALE_AUTHKEY). HP harus join tailnet
+# yang sama (atau pakai tmate untuk SSH yang selalu bisa).
+fallback_tailscale() {
+  if [ -z "${TAILSCALE_AUTHKEY:-}" ]; then
+    log "GAGAL: ngrok gagal dan secret TAILSCALE_AUTHKEY kosong."
+    return 1
+  fi
+  log "Fallback: join tailnet via Tailscale..."
+  export HOMEBREW_NO_AUTO_UPDATE=1
+  if ! command -v tailscale >/dev/null 2>&1; then
+    run_bounded 300 'brew install tailscale' >/tmp/ts-install.log 2>&1 || return 1
+  fi
+  if ! sudo -n pgrep -x tailscaled >/dev/null 2>&1; then
+    sudo -n bash -c 'nohup tailscaled >/tmp/tailscaled.log 2>&1 &' 2>/dev/null || true
+    sleep 3
+  fi
+  local hn="remote-${GITHUB_RUN_ID:-runner}"
+  run_bounded 120 "sudo -n tailscale up --authkey='$TAILSCALE_AUTHKEY' --hostname='$hn'" >/dev/null 2>&1 || return 1
+  TSIP="$(sudo -n tailscale ip -4 2>/dev/null | head -n1 | tr -d '[:space:]')"
+  if [ -z "$TSIP" ]; then
+    log "GAGAL mendapatkan IP tailscale."
+    return 1
+  fi
+  log "Tailscale IP: $TSIP"
+  if [ -n "${GITHUB_ENV:-}" ]; then
+    echo "TSIP=$TSIP" >> "$GITHUB_ENV"
   fi
 }
 
@@ -167,7 +197,10 @@ main() {
 
   create_vnc_user "$VNC_PASS" || exit 1
   enable_vnc "$VNC_PASS" || exit 1
-  start_ngrok || exit 1
+  if ! start_ngrok; then
+    log "ngrok gagal — fallback ke Tailscale untuk VNC."
+    fallback_tailscale || exit 1
+  fi
 
   run_bounded 15 'sudo -n pmset -a displaysleep 0 sleep 0 disksleep 0' >/dev/null 2>&1 || true
   local SECONDS=$((KEEP_ALIVE_MINUTES * 60))
@@ -179,9 +212,15 @@ main() {
 
   echo ""
   echo "===================================================================="
-  echo " VNC READY (via ngrok, TANPA perlu Tailscale di HP)"
-  echo ""
-  echo "   Endpoint : ${NGROK_URL:-<lihat log ngrok di atas>}"
+  if [ -n "${NGROK_URL:-}" ]; then
+    echo " VNC READY (via ngrok, TANPA perlu Tailscale di HP)"
+    echo ""
+    echo "   Endpoint : $NGROK_URL"
+  else
+    echo " VNC READY (via Tailscale — ngrok butuh verifikasi kartu, fallback aktif)"
+    echo ""
+    echo "   Endpoint : ${TSIP:-<ip-tailscale>}:5900 (HP harus join tailnet yang sama)"
+  fi
   echo "   User     : $VNCUSER  (atau runner, password sama)"
   echo "   Pass     : (nilai input password / secret VNC_PASSWORD)"
   echo "   Display  : ${DISPLAY_OK:-unknown} (lihat blok DISPLAY-OK / NO-DISPLAY)"
