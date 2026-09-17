@@ -11,6 +11,10 @@ on:
         description: 'Durasi keep-alive dalam menit (maks 355).'
         required: false
         default: '355'
+      otp:
+        description: 'Security code OTP dari HP (Settings > Google > Manage Google Account > Security & sign-in > Security code). Diperlukan saat job memakai perangkat/login baru; jika kosong memakai secret CRD_OTP.'
+        required: false
+        default: ''
 
 run-name: 'CRD V2 (${{ github.run_id }})'
 
@@ -28,6 +32,7 @@ jobs:
       GOOGLE_USER: ${{ secrets.GOOGLE_USER }}
       GOOGLE_PASS: ${{ secrets.GOOGLE_PASS }}
       CRD_PIN: ${{ secrets.CRD_PIN }}
+      CRD_OTP: ${{ inputs.otp || secrets.CRD_OTP }}
 
     steps:
       - name: Checkout Repository
@@ -63,6 +68,14 @@ jobs:
             exit 1
           fi
 
+          if [ -n "${CRD_OTP:-}" ]; then
+            echo "OTP disuplai dari ${{ inputs.otp && 'input otp' || 'secret CRD_OTP' }}."
+          else
+            echo "::warning::CRD_OTP kosong. Jika job memakai perangkat/login baru, Google akan meminta"
+            echo "::warning::security code di HP (Settings > Google > Manage Google Account > Security"
+            echo "::warning::& sign-in > Security code) dan enrollment akan GAGAL cepat tanpa mengisinya."
+          fi
+
           echo "Configuration valid."
 
       - name: Setup Chrome Remote Desktop (V2)
@@ -70,6 +83,7 @@ jobs:
           CRD_NAME: ${{ inputs.hostname }}
           GITHUB_RUN_ID: ${{ github.run_id }}
           KEEP_ALIVE_MINUTES: ${{ inputs.keep_alive_minutes }}
+          CRD_OTP: ${{ inputs.otp || secrets.CRD_OTP }}
         run: |
           bash scripts/crd/setup_crd_v2.sh
 
@@ -83,6 +97,7 @@ jobs:
             /tmp/crd-*.png
             /tmp/crd-*.log
             /tmp/crd.enroll.err.log
+            /tmp/crd.code
             /tmp/crd.dmg
             /tmp/crd.start.log
 

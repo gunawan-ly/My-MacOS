@@ -191,9 +191,16 @@ tcc_fix() {
   if [ "$ncols" -gt 10 ]; then
     if [ -n "$csreq" ]; then
       sql="INSERT OR REPLACE INTO access (service,client,client_type,auth_value,auth_reason,auth_version,csreq,indirect_object_identifier,flags,last_modified) VALUES('$svc','$client',$ctype,2,4,1,X'$csreq','UNUSED',0,strftime('%s','now'));"
+      # pastikan kolom indirect_object_identifier_type ada dan terisi sinkron
+      if sudo -n sqlite3 "$TCC_DB" 'PRAGMA table_info(access);' 2>/dev/null | grep -q 'indirect_object_identifier_type'; then
+        sql="INSERT OR REPLACE INTO access (service,client,client_type,auth_value,auth_reason,auth_version,csreq,indirect_object_identifier,indirect_object_identifier_type,flags,last_modified) VALUES('$svc','$client',$ctype,2,4,1,X'$csreq','UNUSED',0,0,strftime('%s','now'));"
+      fi
       log "  TCC INSERT dgn csreq : $svc | $client (type=$ctype)"
     else
       sql="INSERT OR REPLACE INTO access (service,client,client_type,auth_value,auth_reason,auth_version,indirect_object_identifier,flags,last_modified) VALUES('$svc','$client',$ctype,2,4,1,'UNUSED',0,strftime('%s','now'));"
+      if sudo -n sqlite3 "$TCC_DB" 'PRAGMA table_info(access);' 2>/dev/null | grep -q 'indirect_object_identifier_type'; then
+        sql="INSERT OR REPLACE INTO access (service,client,client_type,auth_value,auth_reason,auth_version,indirect_object_identifier,indirect_object_identifier_type,flags,last_modified) VALUES('$svc','$client',$ctype,2,4,1,'UNUSED',0,0,strftime('%s','now'));"
+      fi
       log "  TCC INSERT (no csreq): $svc | $client (type=$ctype)"
     fi
   else
@@ -336,6 +343,7 @@ enroll_host() {
   TMP="$(mktemp /tmp/crd.config.XXXXXX.json)"
   CONFIG_JSON="$(env CRD_NAME="$CRD_NAME" GOOGLE_USER="$GOOGLE_USER" \
                     GOOGLE_PASS="$GOOGLE_PASS" CRD_PIN="$CRD_PIN" \
+                    CRD_OTP="${CRD_OTP:-}" CRD_CLEANUP="${CRD_CLEANUP:-1}" \
                     python3 "$ENROLL" 2>/tmp/crd.enroll.err.log)"
   rc=$?
   if [ "$rc" -ne 0 ]; then
@@ -356,7 +364,11 @@ enroll_host() {
 
 wake_display() {
   log "Menyiapkan display (idle 0 + wallpaper + caffeinate)..."
-  run_bounded 10 "osascript -e 'set idle time of application \"System Events\" to 0' -e 'tell application \"Finder\" to set desktop picture to POSIX file \"/System/Library/Desktop Pictures/Solid Colors/Blue.png\"'" >/dev/null 2>&1
+  # Wallpaper versi yang TERBUKTI di lapangan (bukan Solid Colors/Blue.png):
+  # System Events > every desktop > set picture. Serta nonaktifkan power nap.
+  run_bounded 10 "osascript -e 'tell application \"System Events\" to tell every desktop to set picture to \"/System/Library/Desktop Pictures/Big Sur Graphic.madesktop\"'" >/dev/null 2>&1 \
+    || run_bounded 10 "osascript -e 'tell application \"Finder\" to set desktop picture to POSIX file \"/System/Library/Desktop Pictures/Big Sur Graphic.madesktop\"'" >/dev/null 2>&1
+  run_bounded 10 "pmset -a sleep 0 displaysleep 0 disksleep 0" >/dev/null 2>&1 || true
   ( run_bounded 5 "caffeinate -dimsu" >/dev/null 2>&1 & ) || true
 }
 

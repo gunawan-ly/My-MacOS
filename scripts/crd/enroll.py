@@ -41,6 +41,7 @@ import uuid
 PORT = 9223
 CLIENT_ID = "440925447803-m890isgsr23kdkcu2erd4mirnrjalf98.apps.googleusercontent.com"
 SECRETS_OUT = "/tmp/crd-session.json"
+CODE_FILE = "/tmp/crd.code"
 
 CHROME_CANDIDATES = [
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
@@ -231,26 +232,34 @@ class NativeMessaging:
 
     def call(self, obj, timeout=60):
         data = json.dumps(obj).encode()
+        import select
         with self.lock:
             self.p.stdin.write(struct.pack("<I", len(data)) + data)
             self.p.stdin.flush()
-            self.p.stdout.settimeout(timeout)
-            hdr = self._read_exact(4)
-            if not hdr:
+            hdr = self._read_bytes(4, timeout)
+            if len(hdr) < 4:
                 raise RuntimeError("NM tidak membalas: %s" % "".join(self.errbuf[-3:]))
             n = struct.unpack("<I", hdr)[0]
-            body = self._read_exact(n)
+            body = self._read_bytes(n, timeout)
             if body is None:
                 raise RuntimeError("NM respons terpotong")
             return json.loads(body.decode())
 
-    def _read_exact(self, n):
+    def _read_bytes(self, n, timeout):
+        import select
         buf = b""
+        deadline = time.time() + timeout
         while len(buf) < n:
-            c = self.p.stdout.read(n - len(buf))
-            if not c:
-                return None
-            buf += c
+            remain = deadline - time.time()
+            if remain <= 0:
+                raise RuntimeError("NM timeout membaca respons")
+            r, _, _ = select.select([self.p.stdout], [], [], max(remain, 0.001))
+            if not r:
+                raise RuntimeError("NM timeout membaca respons")
+            chunk = os.read(self.p.stdout.fileno(), n - len(buf))
+            if not chunk:
+                break
+            buf += chunk
         return buf
 
     def close(self):
@@ -279,6 +288,8 @@ def launch_chrome(chrome_path):
         "--disable-sync",
         "--no-service-autorun",
         "--disable-features=Translate,MediaRouter",
+        "--disable-blink-features=AutomationControlled",
+        "--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
         "about:blank",
     ]
     proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -289,10 +300,21 @@ def launch_chrome(chrome_path):
 def setup_page(page):
     for method, params in [("Page.enable", {}), ("Runtime.enable", {}), ("Network.enable", {})]:
         page.call(method, params)
-    page.call("Page.addScriptToEvaluateOnNewDocument", {"source": """
-Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
-window.chrome = window.chrome || { runtime: {} };
+    page.call("Page.addScriptToEvaluateOnNewDocument", {"source": r"""
+(() => {
+  const u = Object.getOwnPropertyDescriptor(Navigator.prototype, 'webdriver');
+  if (u) Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+  else Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+  Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+  Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+  window.chrome = window.chrome || {};
+  window.chrome.runtime = window.chrome.runtime || { id: undefined };
+  const origQ = window.CanvasRenderingContext2D && CanvasRenderingContext2D.prototype.hasOwnProperty('getParameter');
+  for (const key of ['csi', 'loadTimes', 'app', 'runtime']) {
+    if (!window.chrome[key]) window.chrome[key] = {};
+  }
+  delete window.__cdc_type_helper; delete window.__cdc_apply_fn;
+})();
 """})
     page.call("Page.navigate", {"url": "about:blank"})
 
@@ -461,6 +483,111 @@ def click(page, selector):
                          "el.click();return true;})()" % json.dumps(selector), timeout=15))
 
 
+def click_by_text(page, text):
+    """Klik elemen ter-dalam yang visible dan innerText-trimmed === text."""
+    return bool(js(
+        page,
+        "(function(){var q='%s';"
+        "var best=null;"
+        "var els=document.querySelectorAll('button,a,[role=button],div,li,span');"
+        "for(var el of els){"
+        "var t=(el.innerText||el.getAttribute('aria-label')||'').trim();"
+        "if(t!==q)continue;"
+        "var r=el.getBoundingClientRect();"
+        "var n=el.getElementsByTagName('*').length;"
+        "if(r.width>0&&r.height>0&&(best===null||n>best.n))best={el:el,n:n};"
+        "}"
+        "if(!best)return false;"
+        "best.el.click();return true;})()" % text.replace("\\", "\\\\").replace("'", "\\'").replace("\n", " "),
+        timeout=15
+    ))
+
+
+def _elem_center_js(page, js_expr, timeout=15):
+    """js_expr harus mengevaluasi ke '{"x":..,"y":..}' atau null."""
+    try:
+        raw = js(page, js_expr, timeout=timeout)
+    except Exception:
+        return None
+    if not raw:
+        return None
+    try:
+        j = json.loads(raw)
+    except Exception:
+        return None
+    if not j or "x" not in j or "y" not in j:
+        return None
+    return j["x"], j["y"]
+
+
+def center_by_text(page, text):
+    """Titik tengah elemen visible dengan innerText === text."""
+    return _elem_center_js(
+        page,
+        "(function(){var q='%s';var best=null;"
+        "var els=document.querySelectorAll('button,a,[role=button],div,li,span');"
+        "for(var el of els){var t=(el.innerText||'').trim();if(t!==q)continue;"
+        "var r=el.getBoundingClientRect();var n=el.getElementsByTagName('*').length;"
+        "if(r.width>0&&r.height>0&&(best===null||n>best.n))best={x:r.x+r.width/2,y:r.y+r.height/2,n:n};}"
+        "return best?JSON.stringify(best):null;})()"
+        % text.replace("\\", "\\\\").replace("'", "\\'").replace("\n", " "),
+        timeout=15
+    )
+
+
+def center_by_css(page, selector):
+    """Titik tengah elemen visible pertama yang cocok dengan CSS selector."""
+    return _elem_center_js(
+        page,
+        "(function(){var el=document.querySelector(%s);if(!el)return null;"
+        "var r=el.getBoundingClientRect();"
+        "return (r.width>0&&r.height>0)?JSON.stringify({x:r.x+r.width/2,y:r.y+r.height/2}):null;})()"
+        % json.dumps(selector),
+        timeout=15
+    )
+
+
+def real_click_center(page, x, y):
+    """Klik mouse asli (trusted) lewat CDP Input domain."""
+    try:
+        page.call("Input.dispatchMouseEvent", {"type": "mousePressed", "x": x, "y": y, "button": "left", "clickCount": 1})
+        time.sleep(0.08)
+        page.call("Input.dispatchMouseEvent", {"type": "mouseReleased", "x": x, "y": y, "button": "left", "clickCount": 1})
+        return True
+    except Exception as e:
+        log("real_click_center warning: %s" % str(e)[:200])
+        return False
+
+
+def real_click_element(page, text_or_sel):
+    """Klik nyata elemen berdasar teks persis atau selector CSS."""
+    c = center_by_text(page, text_or_sel) or center_by_css(page, text_or_sel)
+    if not c:
+        return False
+    return real_click_center(page, c[0], c[1])
+
+
+def real_type_into(page, x, y, text):
+    """Fokuskan field via klik nyata, lalu ketik karakter demi karakter."""
+    try:
+        real_click_center(page, x, y)
+        time.sleep(0.2)
+        for ch in text:
+            page.call(
+                "Input.dispatchKeyEvent",
+                {"type": "keyDown", "text": ch, "key": ch, "code": "Key" + ch.upper()},
+            )
+            page.call(
+                "Input.dispatchKeyEvent",
+                {"type": "keyUp", "text": ch, "key": ch, "code": "Key" + ch.upper()},
+            )
+            time.sleep(0.03)
+        return True
+    except Exception as e:
+        log("real_type_into warning: %s" % str(e)[:200])
+        return False
+
+
 def press_enter(page):
     page.call("Input.dispatchKeyEvent", {"type": "keyDown", "key": "Enter", "code": "Enter",
                                          "text": "\r", "unmodifiedText": "\r",
@@ -538,6 +665,56 @@ def _flatten_frames(ft):
     return out
 
 
+def fill_password(page, selector, text):
+    """Isi field password via klik koordinat asli + key events per-karakter.
+
+    Dihindari: DOM.focus, JS el.click(), dan Ctrl+A (menyulut deteksi aneh
+    Google / re-render yang menghapus field). Cara ini (klik + ketik polos)
+    terbukti stabil: nilai tertulis utuh dan tidak ada error shake.
+    """
+    for attempt in range(1, 5):
+        rect = js(
+            page,
+            "(function(){var el=document.querySelector(%s);if(!el)return null;"
+            "el.scrollIntoView({block:'center'});var r=el.getBoundingClientRect();"
+            "return {x:r.left+r.width/2,y:r.top+r.height/2};})()" % json.dumps(selector),
+            timeout=15
+        )
+        log("fill att=%d rect=%s" % (attempt, rect))
+        if not rect:
+            time.sleep(0.7)
+            continue
+        for t in ("mousePressed", "mouseReleased"):
+            page.call("Input.dispatchMouseEvent", {"type": t, "x": float(rect["x"]), "y": float(rect["y"]),
+                                                   "button": "left", "clickCount": 1})
+        time.sleep(0.3)
+        act = js(page, "(function(){var e=document.activeElement;if(!e)return null;"
+                       "return {tag:e.tagName,name:e.name,id:e.id,type:e.type};})()", timeout=10)
+        log("  active=%s" % act)
+        if not (act and act.get("tag") == "INPUT"):
+            time.sleep(0.5)
+            continue
+        for ch in text:
+            page.call("Input.dispatchKeyEvent", {"type": "keyDown", "key": ch, "code": ch,
+                                                 "text": ch, "unmodifiedText": ch})
+            page.call("Input.dispatchKeyEvent", {"type": "keyUp", "key": ch, "code": ch})
+            time.sleep(0.05)
+        v = js(page, "(function(){var e=document.activeElement;var q=document.querySelector(%s);"
+                     "return {act:e?e.value:null, q:q?q.value:null, "
+                     "an:e?(e.tagName+'/'+e.name):null, "
+                     "qn:q?(q.tagName+'/'+q.name):null};})()" % json.dumps(selector), timeout=10)
+        log("  after-keys=%s" % v)
+        time.sleep(0.9)
+        v2 = js(page, "(function(){var e=document.querySelector(%s);return e?e.value:null;})()"
+                % json.dumps(selector), timeout=10)
+        log("  after-1s q.value=%r" % v2)
+        if v2 and v2 == text:
+            return True
+        if attempt < 4:
+            time.sleep(1)
+    return False
+
+
 def login_google(page, user, password):
     continue_url = urllib.parse.quote(
         "https://remotedesktop.google.com/access",
@@ -559,6 +736,11 @@ def login_google(page, user, password):
         30
     )
 
+    href = js(page, "location.href", timeout=10) or ""
+    if href.startswith("https://remotedesktop.google.com"):
+        log("Sudah login; melewati langkah input email.")
+        return
+
     email_selector = (
         "input[type=email],"
         "#identifierId,"
@@ -571,6 +753,10 @@ def login_google(page, user, password):
         "!!document.querySelector(%s)" % json.dumps(email_selector),
         120
     ):
+        href = js(page, "location.href", timeout=10) or ""
+        if href.startswith("https://remotedesktop.google.com"):
+            log("Terarah ke CRD tanpa perlu login; lanjut.")
+            return
         dump_state(page, "login-email")
         screenshot(page, "login-email")
         die(
@@ -607,16 +793,22 @@ def login_google(page, user, password):
 
     log("email dikirim; menunggu password...")
 
-    password_selector = (
-        "input[type=password],"
-        "#password,"
-        "input[name=Passwd],"
-        "input[autocomplete=current-password]"
+    password_selector = "input[name=Passwd]"
+
+    # Field password yang BENAR-BENAR terlihat (menghindari mirror tersembunyi
+    # `hiddenPassword` dan elemen `<div id=password>` yang bisa didahulukan
+    # querySelector — oleh karena itu selector persis `input[name=Passwd]`).
+    visible_password_js = (
+        "(function(){var els=document.querySelectorAll(%s);"
+        "for(var el of els){"
+        "var r=el.getBoundingClientRect();"
+        "if(r.width>0&&r.height>0&&el.offsetParent!==null)return true;"
+        "}return false;})()" % json.dumps(password_selector)
     )
 
     if not wait_until(
         page,
-        "!!document.querySelector(%s)" % json.dumps(password_selector),
+        visible_password_js,
         60
     ):
         dump_state(page, "login-password")
@@ -626,21 +818,16 @@ def login_google(page, user, password):
             "Lihat DEBUG + screenshot."
         )
 
-    log("mengisi password...")
-    type_into(page, password_selector, password)
-
-    time.sleep(1)
-
-    password_ok = js(
+    # Tunggu form Google selesai hydrate (avoid race: isi saat masih
+    # "Loading" bisa di-reset oleh React setelah mount).
+    wait_until(
         page,
-        "(function(){"
-        "var e=document.querySelector(%s);"
-        "return !!(e && e.value && e.value.length > 0);"
-        "})()" % json.dumps(password_selector),
-        timeout=10
+        "!document.body.innerText.includes('Loading')",
+        20
     )
+    time.sleep(1.5)
 
-    if not password_ok:
+    if not fill_password(page, password_selector, password):
         dump_state(page, "password-not-filled")
         screenshot(page, "password-not-filled")
         die("Password gagal dimasukkan ke field Google.")
@@ -653,8 +840,30 @@ def login_google(page, user, password):
         log("tombol Next tidak ditemukan; fallback Enter.")
         press_enter(page)
 
-    deadline = time.time() + 120
+    deadline = time.time() + 900
     last_href = ""
+    last_code = ""
+    prompt_since = 0.0
+    resend_count = 0
+    otp_used = False
+    ootp_since = 0.0
+
+    def resend_prompt():
+        # Klik tombol "Resend it" pada halaman Google prompt bila ada.
+        # Hati-hati: resend berlebihan => "Too many failed attempts".
+        nonlocal resend_count
+        if resend_count >= 2 or "Too many failed attempts" in (
+                js(page, "document.body?document.body.innerText:''", timeout=10) or ""):
+            return False
+        try:
+            clicked = click_by_text(page, "Resend it")
+            if clicked:
+                resend_count += 1
+                log("Prompt dikirim ulang (Resend it) ke-%d." % resend_count)
+                return True
+        except Exception:
+            pass
+        return False
 
     while time.time() < deadline:
         try:
@@ -668,7 +877,7 @@ def login_google(page, user, password):
                 js(
                     page,
                     "document.body ? "
-                    "document.body.innerText.slice(0,1200) : ''",
+                    "document.body.innerText.slice(0,4000) : ''",
                     timeout=10
                 )
             )
@@ -683,6 +892,121 @@ def login_google(page, user, password):
             ):
                 log("login Google berhasil.")
                 break
+
+            # Google Prompt (device prompt) "Verify it's you":
+            # pengguna harus mengetuk Yes + kode di notifikasi HP.
+            if ("/signin/challenge/dp" in href) or (
+                "notification" in body.lower()
+                and re.search(r"Tap \d{1,6} on your phone", body, re.I)
+            ):
+                if prompt_since == 0.0:
+                    prompt_since = time.time()
+                m = re.search(r"Tap (\d{1,6}) on your phone", body, re.I)
+                if not m:
+                    m = re.search(r"notification, then tap (\d{1,6})", body, re.I)
+                code = m.group(1) if m else ""
+                if code and code != last_code:
+                    last_code = code
+                    log("")
+                    log("===============================================")
+                    log(" DEVICE PROMPT: buka notifikasi 'Google sign-in'")
+                    log(" di HP, ketuk Yes lalu angka: %s" % code)
+                    log("===============================================")
+                    log("")
+                if time.time() - prompt_since > 90:
+                    resend_prompt()
+                    prompt_since = time.time()
+                # JANGAN anggap error — terus tunggu persetujuan di HP.
+                time.sleep(2)
+                continue
+
+            # Halaman pilih cara verifikasi: aktifkan jalur "security code".
+            if "/signin/challenge/selection" in href:
+                log("Halaman pilih verifikasi. Memilih 'security code'...")
+                if not real_click_element(
+                    page,
+                    "Use your phone or tablet to get a security code (even if it’s offline)",
+                ) and not real_click_element(page, "Use your phone or tablet to get a security code (even if it"):
+                    if "Tap Yes on your phone or tablet" in body:
+                        real_click_element(page, "Tap Yes on your phone or tablet")
+                time.sleep(2)
+                continue
+
+            # jalur OOTP: kode di-generate di HP (Settings > Google >
+            # Security & sign-in > Security code), pengguna membacanya.
+            if "/signin/challenge/ootp" in href or (
+                re.search(r"Enter the code for|enter a code|security code", body, re.I)
+                and (
+                    js(page, "!!document.querySelector('#ootp-pin') ? 'yes' : ''", timeout=5)
+                    or ""
+                )
+                != ""
+            ):
+                if ootp_since == 0.0:
+                    ootp_since = time.time()
+
+                # 1) env CRD_OTP (sekali pakai, dari input/secret workflow)
+                code = ""
+                if not otp_used:
+                    code = os.environ.get("CRD_OTP", "").strip()
+
+                # 2) fallback: file /tmp/crd.code (mode manual interaktif)
+                if not code:
+                    try:
+                        with open(CODE_FILE, "r") as f:
+                            code = (f.read() or "").strip()
+                    except Exception:
+                        pass
+
+                if code:
+                    c = center_by_css(page, "#ootp-pin")
+                    if not c:
+                        time.sleep(2)
+                        continue
+                    otp_used = True
+                    log("Mengetik security code dari HP...")
+                    real_type_into(page, c[0], c[1], code)
+                    time.sleep(0.5)
+                    if not real_click_element(page, "Next"):
+                        press_enter(page)
+                    try:
+                        os.remove(CODE_FILE)
+                    except Exception:
+                        pass
+                    log("Security code dikirim; menunggu proses Google...")
+                    time.sleep(5)
+                    href2 = js(page, "location.href", timeout=10) or ""
+                    if "/signin/challenge/ootp" in href2:
+                        dump_state(page, "login-ootp-failed")
+                        screenshot(page, "login-ootp-failed")
+                        die(
+                            "Security code ditolak/kedaluwarsa. Ambil kode baru di HP "
+                            "(Settings > Google > Manage Google Account > "
+                            "Security & sign-in > Security code) lalu jalankan ulang."
+                        )
+                    continue
+
+                # Tidak ada kode: tunggu sebentar (file bisa ditulis manual),
+                # lalu fail cepat dengan instruksi yang jelas.
+                t = int(time.time())
+                if t % 15 == 0 and t != last_code:
+                    last_code = t
+                    log("")
+                    log("KODE DIHP:")
+                    log(" Buka di HP %s:" % user)
+                    log("   Settings > Google > Profil > Manage Google Account")
+                    log("   > Security & sign-in > Security code")
+                    log(" lalu isi input 'otp' / secret CRD_OTP, atau tulis ke %s." % CODE_FILE)
+                    log("")
+                if time.time() - ootp_since > 120:
+                    dump_state(page, "login-ootp-wait")
+                    screenshot(page, "login-ootp-wait")
+                    die(
+                        "Google meminta security code (OOTP) tapi tidak ada kode. "
+                        "Set secret/input otp (atau tulis file %s) lalu jalankan ulang." % CODE_FILE
+                    )
+                time.sleep(2)
+                continue
 
             # Password salah.
             if re.search(
@@ -749,7 +1073,8 @@ def login_google(page, user, password):
         dump_state(page, "login-loop")
         screenshot(page, "login-loop")
         die(
-            "Login tidak selesai dalam 120 detik. "
+            "Login tidak selesai dalam 900 detik "
+            "(inkl. tunggu Google prompt di HP). "
             "Lihat DEBUG + screenshot."
         )
 
@@ -828,6 +1153,13 @@ def register_host(jar, at, host_id, public_key, host_name):
         die("batchexecute HTTP %d: %s" % (resp.status, raw[:400]))
 
     text = raw.lstrip().replace(")]}'", "", 1).lstrip()
+
+    # Bentuk-1: array JSON langsung: [["wrb.fr","RMf1af","<json>"],...]
+    found = _extract_register((json.loads(text) if text.startswith("[") else None))
+    if found:
+        return found
+
+    # Bentuk-2 (legacy): blok ber-prefiks angka.
     blocks = []
     pos = 0
     while pos < len(text):
@@ -840,17 +1172,122 @@ def register_host(jar, at, host_id, public_key, host_name):
             break
         blocks.append(text[nl + 1:nl + 1 + n].strip())
         pos = nl + 1 + n
-    for b in blocks:
-        try:
-            arr = json.loads(b)
-            if (isinstance(arr, list) and arr and isinstance(arr[0], list)
-                    and arr[0][:2] == ["wrb.fr", "RMf1af"]):
-                result = json.loads(arr[0][2])
-                host_info, auth_code = result[0], result[1]
-                return host_info, auth_code
-        except Exception:
-            continue
+    found = _extract_register(blocks)
+    if found:
+        return found
     die("RegisterHost gagal di batchexecute. Output:\n%s" % raw[:600])
+
+
+def _extract_register(arrs):
+    """Cari respons RMf1af pada list dari batchexecute; kembalikan (host_info, auth_code)."""
+    from collections.abc import Iterable
+    if not isinstance(arrs, (list, tuple)):
+        return None
+    stack = list(arrs)
+    while stack:
+        item = stack.pop()
+        if (isinstance(item, list) and len(item) >= 3
+                and item[0] == "wrb.fr" and item[1] == "RMf1af"):
+            payload = item[2]
+            if isinstance(payload, str):
+                try:
+                    payload = json.loads(payload)
+                except Exception:
+                    continue
+            if (isinstance(payload, list) and payload
+                    and isinstance(payload[0], list) and len(payload) >= 2):
+                return payload[0], payload[1]
+            continue
+        if isinstance(item, (list, tuple)):
+            stack.extend(item)
+    return None
+
+
+def _rpc_text(jar, at, rpc_id, inner, use_at=True, timeout=60):
+    """Kirim RPC batchexecute; kembalikan text respons mentah."""
+    f_req = json.dumps([[["%s" % rpc_id, inner, None, "generic"]]])
+    body = urllib.parse.urlencode({"f.req": f_req})
+    if use_at and at:
+        body += "&" + urllib.parse.urlencode({"at": at})
+    cookie = "; ".join("%s=%s" % (c["name"], c["value"]) for c in jar)
+    conn = http.client.HTTPSConnection("remotedesktop.google.com", timeout=timeout)
+    conn.request("POST", "/_/RemotingUi/data/batchexecute", body=body, headers={
+        "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+        "Cookie": cookie,
+        "Referer": "https://remotedesktop.google.com/access",
+    })
+    resp = conn.getresponse()
+    raw = resp.read().decode("utf-8", "replace")
+    conn.close()
+    if resp.status != 200:
+        raise RuntimeError("batchexecute %s HTTP %d" % (rpc_id, resp.status))
+    return raw
+
+
+def get_host_list(jar, at):
+    """Ambil daftar host milik akun via RPC GetHostList; kembalikan list host id."""
+    raw = _rpc_text(jar, at, "PTh6kb", "[]", use_at=True)
+    text = raw.lstrip().replace(")]}'", "", 1).lstrip()
+    try:
+        data = json.loads(text)
+    except Exception:
+        return []
+    payload = None
+    stack = list(data) if isinstance(data, list) else []
+    while stack:
+        item = stack.pop()
+        if (isinstance(item, list) and len(item) >= 3
+                and item[0] == "wrb.fr" and item[1] == "PTh6kb"):
+            payload = item[2]
+            break
+        if isinstance(item, (list, tuple)):
+            stack.extend(item)
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except Exception:
+            return []
+    ids = []
+    if (isinstance(payload, list) and payload and isinstance(payload[0], list)):
+        for entry in payload[0]:
+            if (isinstance(entry, list) and entry and isinstance(entry[0], str)
+                    and re.fullmatch(
+                        r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+                        entry[0], re.I)):
+                ids.append(entry[0])
+    return ids
+
+
+def delete_host(jar, at, host_id):
+    """Hapus host via RPC DeleteHost."""
+    raw = _rpc_text(jar, at, "T1Tvkf", json.dumps([host_id]), use_at=True)
+    if "T1Tvkf" not in raw:
+        raise RuntimeError("DeleteHost tidak mengembalikan respons RMf1af/T1Tvkf")
+    return raw
+
+
+def cleanup_hosts(jar, at, keep_host_id):
+    """Hapus semua host lain milik akun, sisakan keep_host_id (yang baru)."""
+    if os.environ.get("CRD_CLEANUP", "1").strip() not in ("1", "true", "yes"):
+        log("CRD_CLEANUP nonaktif; host lain tidak dihapus.")
+        return
+    try:
+        ids = get_host_list(jar, at)
+    except Exception as e:
+        log("Peringatan: GetHostList gagal (%s) — cleanup dilewati." % str(e)[:150])
+        return
+    ids = [h for h in ids if h.lower() != str(keep_host_id).lower()]
+    if not ids:
+        log("GetHostList: tidak ada host lain utk dihapus.")
+        return
+    log("GetHostList: %d host lain ditemukan, menghapus..." % len(ids))
+    for hid in ids:
+        try:
+            delete_host(jar, at, hid)
+            log("  dihapus: %s" % hid)
+        except Exception as e:
+            log("  PERINGATAN gagal hapus %s: %s" % (hid, str(e)[:120]))
+    log("Cleanup host lama selesai.")
 
 
 # ---------------------------------------------------------------------------
@@ -899,6 +1336,8 @@ def main():
         host_info, auth_code = register_host(jar, at, host_id, pub, name)
         new_host_id = host_info[0] if isinstance(host_info, list) and host_info else host_id
         log("RegisterHost OK -> hostId=%s" % new_host_id)
+
+        cleanup_hosts(jar, at, new_host_id)
 
         pin_hash = nm.call({"type": "getPinHash", "hostId": new_host_id, "pin": pin}, timeout=60)
         if "hash" not in pin_hash:
