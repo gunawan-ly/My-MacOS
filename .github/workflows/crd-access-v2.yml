@@ -93,7 +93,9 @@ jobs:
           echo "Configuration valid."
 
       - name: Set password user job (agar sudo -S tersedia)
-        if: ${{ secrets.CRD_LOCAL_PASS != '' }}
+        if: env.CRD_LOCAL_PASS != ''
+        env:
+          CRD_LOCAL_PASS: ${{ secrets.CRD_LOCAL_PASS }}
         run: |
           if sudo -n true 2>/dev/null && [ -n "$CRD_LOCAL_PASS" ]; then
             sudo -n dscl . -passwd /Users/"$(whoami)" "$CRD_LOCAL_PASS" \
