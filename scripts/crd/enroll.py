@@ -325,13 +325,135 @@ def wait_until(page, expr, timeout=30, invert=False):
 
 
 def type_into(page, selector, value):
-    js(page, "(function(){var el=document.querySelector(%s);if(!el)return false;"
-            "el.focus();el.click();return true;})()" % json.dumps(selector), timeout=15)
+    ok = js(
+        page,
+        "(function(){"
+        "var el=document.querySelector(%s);"
+        "if(!el)return false;"
+        "el.focus();"
+        "el.click();"
+        "el.value='';"
+        "return true;"
+        "})()" % json.dumps(selector),
+        timeout=15
+    )
+
+    if not ok:
+        raise RuntimeError("Element tidak ditemukan: %s" % selector)
+
+    page.call("Input.dispatchKeyEvent", {
+        "type": "keyDown",
+        "key": "a",
+        "code": "KeyA",
+        "modifiers": 2
+    })
+    page.call("Input.dispatchKeyEvent", {
+        "type": "keyUp",
+        "key": "a",
+        "code": "KeyA",
+        "modifiers": 2
+    })
+
     page.call("Input.insertText", {"text": value})
-    js(page, "(function(){var el=document.querySelector(%s);if(el){"
-            "el.dispatchEvent(new Event('input',{bubbles:true}));"
-            "el.dispatchEvent(new Event('change',{bubbles:true}));return true;}return false;})()"
-        % json.dumps(selector), timeout=15)
+
+    js(
+        page,
+        "(function(){"
+        "var el=document.querySelector(%s);"
+        "if(!el)return false;"
+        "el.dispatchEvent(new InputEvent('input',{"
+        "bubbles:true,"
+        "inputType:'insertText',"
+        "data:null"
+        "}));"
+        "el.dispatchEvent(new Event('change',{bubbles:true}));"
+        "return true;"
+        "})()" % json.dumps(selector),
+        timeout=15
+    )
+
+def click_login_button(page):
+    selector = """
+    (function(){
+        var candidates = [
+            '#identifierNext',
+            '#passwordNext',
+            'button[type="submit"]',
+            'input[type="submit"]',
+            '[role="button"][jsname="LgbsSe"]',
+            '[role="button"][jsname="M2vV3"]',
+            '[role="button"]'
+        ];
+
+        for (var s of candidates) {
+            var els = document.querySelectorAll(s);
+
+            for (var el of els) {
+                var text = (el.innerText || el.getAttribute('aria-label') || '').trim();
+
+                if (
+                    s !== '[role="button"]' ||
+                    /^(Next|Berikutnya|Continue|Lanjut)$/i.test(text)
+                ) {
+                    var r = el.getBoundingClientRect();
+
+                    if (
+                        r.width > 0 &&
+                        r.height > 0 &&
+                        !el.disabled
+                    ) {
+                        return {
+                            x: r.left + r.width / 2,
+                            y: r.top + r.height / 2,
+                            text: text,
+                            selector: s
+                        };
+                    }
+                }
+            }
+        }
+
+        return null;
+    })()
+    """
+
+    target = js(page, selector, timeout=15)
+
+    if not target:
+        return False
+
+    log(
+        "klik tombol login: %s (%s,%s)"
+        % (
+            target.get("text", ""),
+            target["x"],
+            target["y"]
+        )
+    )
+
+    page.call(
+        "Input.dispatchMouseEvent",
+        {
+            "type": "mousePressed",
+            "x": float(target["x"]),
+            "y": float(target["y"]),
+            "button": "left",
+            "clickCount": 1
+        }
+    )
+
+    page.call(
+        "Input.dispatchMouseEvent",
+        {
+            "type": "mouseReleased",
+            "x": float(target["x"]),
+            "y": float(target["y"]),
+            "button": "left",
+            "clickCount": 1
+        }
+    )
+
+    return True
 
 
 def click(page, selector):
@@ -417,93 +539,247 @@ def _flatten_frames(ft):
 
 
 def login_google(page, user, password):
-    continue_url = urllib.parse.quote("https://remotedesktop.google.com/access", safe="")
-    url = "https://accounts.google.com/ServiceLogin?hl=en&continue=%s" % continue_url
+    continue_url = urllib.parse.quote(
+        "https://remotedesktop.google.com/access",
+        safe=""
+    )
+
+    url = (
+        "https://accounts.google.com/ServiceLogin"
+        "?hl=en&continue=%s"
+        % continue_url
+    )
+
     log("buka halaman login: accounts.google.com")
     page.call("Page.navigate", {"url": url})
-    wait_until(page, "document.readyState !== 'loading'", 30)
 
-    em = "document.querySelector('input[type=email], #identifierId, input[name=identifier], input[autocomplete=username]')"
-    if not wait_until(page, "!!(%s)" % em, 120):
-        time.sleep(3)
+    wait_until(
+        page,
+        "document.readyState !== 'loading'",
+        30
+    )
+
+    email_selector = (
+        "input[type=email],"
+        "#identifierId,"
+        "input[name=identifier],"
+        "input[autocomplete=username]"
+    )
+
+    if not wait_until(
+        page,
+        "!!document.querySelector(%s)" % json.dumps(email_selector),
+        120
+    ):
         dump_state(page, "login-email")
         screenshot(page, "login-email")
-        die("Input email tidak muncul. Kemungkinan akun kena risiko/2FA/halaman captcha. Lihat DEBUG + screenshot.")
+        die(
+            "Input email tidak muncul. "
+            "Kemungkinan akun kena challenge/2FA/CAPTCHA."
+        )
 
-    type_into(page, "#identifierId, input[type=email], input[name=identifier]", user)
-    time.sleep(0.5)
-    if not click(page, "#identifierNext"):
-        # form tanpa tombol Next: submit langsung
-        js(page, "(function(){var el=document.querySelector('form')||document;"
-                 "var e=new Event('submit',{bubbles:true,cancelable:true});el.dispatchEvent(e);})()")
-    log("email diketik; menunggu input password...")
+    log("mengisi email...")
+    type_into(page, email_selector, user)
 
-    pw = "document.querySelector('input[type=password], #password, input[name=Passwd]')"
-    if not wait_until(page, "!!(%s)" % pw, 60):
-        href = js(page, "location.href", timeout=10) or ""
-        if "challenge" in href or "action=verify" in href or "username=" in href or "/signin/identifier" in href:
-            pass  # lanjut dump keadaan
+    time.sleep(1)
+
+    current_email = js(
+        page,
+        "(function(){"
+        "var e=document.querySelector(%s);"
+        "return e ? e.value : '';"
+        "})()" % json.dumps(email_selector),
+        timeout=10
+    )
+
+    log(
+        "email field terisi: %s"
+        % ("OK" if current_email == user else "TIDAK SESUAI")
+    )
+
+    if current_email != user:
+        dump_state(page, "email-not-filled")
+        screenshot(page, "email-not-filled")
+        die("Email gagal dimasukkan ke field Google.")
+
+    if not click_login_button(page):
+        press_enter(page)
+
+    log("email dikirim; menunggu password...")
+
+    password_selector = (
+        "input[type=password],"
+        "#password,"
+        "input[name=Passwd],"
+        "input[autocomplete=current-password]"
+    )
+
+    if not wait_until(
+        page,
+        "!!document.querySelector(%s)" % json.dumps(password_selector),
+        60
+    ):
         dump_state(page, "login-password")
         screenshot(page, "login-password")
-        die("Input password tidak muncul setelah email. Lihat DEBUG + screenshot.")
+        die(
+            "Input password tidak muncul setelah email. "
+            "Lihat DEBUG + screenshot."
+        )
 
-    type_into(page, "input[type=password], #password, input[name=Passwd]", password)
-    time.sleep(0.5)
-    press_enter(page)
+    log("mengisi password...")
+    type_into(page, password_selector, password)
 
-    # Tunggu keluar dari alur signin menuju continue. Halaman /signin/challenge/pwd
-    # adalah langkah password (normal), BUKAN 2FA — 2FA hanya challenge mfa/otp.
-    deadline = time.time() + 90
-    tries = 0
+    time.sleep(1)
+
+    password_ok = js(
+        page,
+        "(function(){"
+        "var e=document.querySelector(%s);"
+        "return !!(e && e.value && e.value.length > 0);"
+        "})()" % json.dumps(password_selector),
+        timeout=10
+    )
+
+    if not password_ok:
+        dump_state(page, "password-not-filled")
+        screenshot(page, "password-not-filled")
+        die("Password gagal dimasukkan ke field Google.")
+
+    log("password field terisi; submit login...")
+
+    submitted = click_login_button(page)
+
+    if not submitted:
+        log("tombol Next tidak ditemukan; fallback Enter.")
+        press_enter(page)
+
+    deadline = time.time() + 120
+    last_href = ""
+
     while time.time() < deadline:
-        tries += 1
         try:
-            href = js(page, "location.href", timeout=10) or ""
-        except Exception:
-            time.sleep(1.5)
-            continue
-        body = ""
-        try:
-            body = str(js(page, "document.body ? document.body.innerText.slice(0, 500) : ''", timeout=10))
-        except Exception:
-            pass
+            href = js(
+                page,
+                "location.href",
+                timeout=10
+            ) or ""
 
-        if re.search(r"Wrong password|Password yang salah|Password salah|Tidak dapat masuk", body, re.I):
-            dump_state(page, "login-wrongpw")
-            screenshot(page, "login-wrongpw")
-            die("Password tampaknya salah. Periksa secret GOOGLE_PASS.")
+            body = str(
+                js(
+                    page,
+                    "document.body ? "
+                    "document.body.innerText.slice(0,1200) : ''",
+                    timeout=10
+                )
+            )
 
-        if re.search(r"signin/(v2/)?challenge/(mfa|otp|totp|sms|emailprompt|authenticator|legacypassword)|"
-                     r"twofactorauth|Verification code|verification code|2-Step|kode verifikasi", body or href):
-            dump_state(page, "login-2fa")
-            screenshot(page, "login-2fa")
-            die("Google minta verifikasi tambahan (2FA/challenge). Pakai akun tanpa 2FA atau alur cookie.")
+            if href != last_href:
+                log("login URL: %s" % href[:220])
+                last_href = href
 
-        if href.startswith("https://remotedesktop.google.com"):
-            break
+            # Berhasil menuju CRD.
+            if href.startswith(
+                "https://remotedesktop.google.com"
+            ):
+                log("login Google berhasil.")
+                break
 
-        if "Couldn't sign you in" in body or "This browser or app may not be secure" in body:
-            dump_state(page, "login-denied")
-            screenshot(page, "login-denied")
-            die("Google menolak login dari browser terotomasi: %s" % href[:200])
+            # Password salah.
+            if re.search(
+                r"Wrong password|"
+                r"Password yang salah|"
+                r"Password salah|"
+                r"Couldn't sign you in",
+                body,
+                re.I
+            ):
+                dump_state(page, "login-wrongpw")
+                screenshot(page, "login-wrongpw")
+                die(
+                    "Google menolak password. "
+                    "Periksa secret GOOGLE_PASS."
+                )
 
-        # Masih di halaman password -> coba submit ulang beberapa kali.
-        if re.search(r"challenge/pwd|signin/identifier", href):
-            if tries <= 5:
-                if not click_center(page, "#passwordNext, [id$=Next]"):
+            # Halaman login ditolak.
+            if re.search(
+                r"This browser or app may not be secure",
+                body,
+                re.I
+            ):
+                dump_state(page, "login-denied")
+                screenshot(page, "login-denied")
+                die(
+                    "Google menolak browser terotomasi."
+                )
+
+            # Challenge MFA/OTP yang benar-benar aktif.
+            challenge = re.search(
+                r"/signin/challenge/(mfa|otp|totp|sms|"
+                r"authenticator|securitykey|idv)",
+                href,
+                re.I
+            )
+
+            if challenge:
+                dump_state(page, "login-2fa")
+                screenshot(page, "login-2fa")
+                die(
+                    "Google meminta verifikasi tambahan "
+                    "(2FA/challenge)."
+                )
+
+            # Masih berada di halaman password.
+            if re.search(
+                r"/signin/challenge/pwd",
+                href,
+                re.I
+            ):
+                if click_login_button(page):
+                    log("submit password ulang via tombol Next.")
+                else:
                     press_enter(page)
-            time.sleep(1.5)
-            continue
-        time.sleep(1.5)
+
+            time.sleep(2)
+
+        except Exception as e:
+            log("login-loop warning: %s" % str(e)[:250])
+            time.sleep(2)
+
     else:
         dump_state(page, "login-loop")
         screenshot(page, "login-loop")
-        die("Login tidak selesai dalam batas waktu. Lihat DEBUG + screenshot.")
+        die(
+            "Login tidak selesai dalam 120 detik. "
+            "Lihat DEBUG + screenshot."
+        )
 
-    log("login OK -> %s" % (js(page, "location.href", timeout=10) or "")[:120])
+    log(
+        "login OK -> %s"
+        % (
+            js(
+                page,
+                "location.href",
+                timeout=10
+            ) or ""
+        )[:200]
+    )
 
-    page.call("Page.navigate", {"url": "https://remotedesktop.google.com/access"})
-    wait_until(page, "document.readyState === 'complete'", 60)
+    page.call(
+        "Page.navigate",
+        {
+            "url":
+            "https://remotedesktop.google.com/access"
+        }
+    )
+
+    if not wait_until(
+        page,
+        "document.readyState === 'complete'",
+        60
+    ):
+        log(
+            "Peringatan: /access belum complete setelah 60 detik."
+        )
 
 
 def grab_session(page):
