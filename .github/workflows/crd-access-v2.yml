@@ -73,7 +73,21 @@ jobs:
         run: |
           bash scripts/crd/setup_crd_v2.sh
 
+      - name: Upload Debug Artifacts
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: crd-debug-${{ github.run_id }}
+          if-no-files-found: warn
+          path: |
+            /tmp/crd-*.png
+            /tmp/crd-*.log
+            /tmp/crd.enroll.err.log
+            /tmp/crd.dmg
+            /tmp/crd.start.log
+
       - name: Keep Alive
+        if: ${{ success() }}
         env:
           CRD_NAME: ${{ inputs.hostname }}
           GITHUB_RUN_ID: ${{ github.run_id }}

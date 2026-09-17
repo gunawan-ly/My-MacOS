@@ -344,17 +344,59 @@ def screenshot(page, tag):
         log("! screenshot gagal: %s" % e)
 
 
+def dump_state(page, tag):
+    """Cetak keadaan halaman saat ini (URL, title, DOM, input, iframe) utk debug."""
+    def ev(expr):
+        try:
+            return js(page, expr, timeout=8)
+        except Exception as e:
+            return "ERR %s" % e
+    info = {
+        "url": ev("location.href"),
+        "title": ev("document.title"),
+        "readyState": ev("document.readyState"),
+        "html_len": ev("document.documentElement ? document.documentElement.outerHTML.length : -1"),
+        "body_snippet": ev("document.body ? document.body.innerText.slice(0, 400) : ''"),
+        "inputs": ev("[...document.querySelectorAll('input')].map(i=>({type:i.type,name:i.name,id:i.id,ph:i.placeholder}))"),
+        "iframes": ev("document.querySelectorAll('iframe').length"),
+    }
+    try:
+        tree = page.call("Page.getFrameTree")
+        info["frames"] = _flatten_frames(tree.get("frameTree", {}))
+    except Exception as e:
+        info["frames"] = "ERR %s" % e
+    try:
+        cookies = page.call("Network.getCookies", {"urls": ["https://accounts.google.com/"]}).get("cookies", [])
+        info["cookie_names"] = [c.get("name") for c in cookies][:20]
+    except Exception as e:
+        info["cookie_names"] = "ERR %s" % e
+    log("=== DEBUG %s ===" % tag)
+    for k, v in info.items():
+        log("  %s: %s" % (k, json.dumps(v)[:1600] if not isinstance(v, str) else str(v)[:1600]))
+
+
+def _flatten_frames(frame):
+    out = [frame.get("url", "")]
+    for child in (frame.get("childFrames") or []):
+        out.extend(_flatten_frames(child))
+    return out
+
+
 def login_google(page, user, password):
     continue_url = urllib.parse.quote("https://remotedesktop.google.com/access", safe="")
     url = "https://accounts.google.com/ServiceLogin?hl=en&continue=%s" % continue_url
     log("buka halaman login: accounts.google.com")
     page.call("Page.navigate", {"url": url})
+    wait_until(page, "document.readyState !== 'loading'", 30)
 
-    if not wait_until(page, "!!document.querySelector('input[type=email],#identifierId')", 120):
+    em = "document.querySelector('input[type=email], #identifierId, input[name=identifier], input[autocomplete=username]')"
+    if not wait_until(page, "!!(%s)" % em, 120):
+        time.sleep(3)
+        dump_state(page, "login-email")
         screenshot(page, "login-email")
-        die("Input email tidak muncul. Kemungkinan akun kena risiko/2FA. Lihat screenshot.")
+        die("Input email tidak muncul. Kemungkinan akun kena risiko/2FA/halaman captcha. Lihat DEBUG + screenshot.")
 
-    type_into(page, "#identifierId, input[type=email]", user)
+    type_into(page, "#identifierId, input[type=email], input[name=identifier]", user)
     time.sleep(0.5)
     if not click(page, "#identifierNext"):
         # form tanpa tombol Next: submit langsung
@@ -362,15 +404,16 @@ def login_google(page, user, password):
                  "var e=new Event('submit',{bubbles:true,cancelable:true});el.dispatchEvent(e);})()")
     log("email diketik; menunggu input password...")
 
-    if not wait_until(page, "!!(document.querySelector('input[type=password],#password,input[name=Passwd]'))", 60):
+    pw = "document.querySelector('input[type=password], #password, input[name=Passwd]')"
+    if not wait_until(page, "!!(%s)" % pw, 60):
         href = js(page, "location.href", timeout=10) or ""
-        if "challenge" in href or "action=verify" in href:
-            screenshot(page, "login-2fa")
-            die("Google minta verifikasi tambahan (2FA/challenge). Pakai akun tanpa 2FA atau alur cookie.")
+        if "challenge" in href or "action=verify" in href or "username=" in href or "/signin/identifier" in href:
+            pass  # lanjut dump keadaan
+        dump_state(page, "login-password")
         screenshot(page, "login-password")
-        die("Input password tidak muncul setelah email. Lihat screenshot.")
+        die("Input password tidak muncul setelah email. Lihat DEBUG + screenshot.")
 
-    type_into(page, "input[type=password],#password,input[name=Passwd]", password)
+    type_into(page, "input[type=password], #password, input[name=Passwd]", password)
     time.sleep(0.5)
     if not click(page, "#passwordNext"):
         js(page, "(function(){var el=document.querySelector('form')||document;"
@@ -386,23 +429,25 @@ def login_google(page, user, password):
             time.sleep(1.5)
             continue
         if "challenge" in href or "signin/v2/challenge" in href or "ite/boot" in href:
+            dump_state(page, "login-2fa")
             screenshot(page, "login-2fa")
             die("Google minta verifikasi tambahan (2FA/challenge). Pakai akun tanpa 2FA atau alur cookie.")
         if href.startswith("https://remotedesktop.google.com"):
             break
-        title = js(page, "document.title", timeout=10) or ""
         body = ""
         try:
-            body = str(js(page, "document.body ? document.body.innerText.slice(0,400) : ''", timeout=10))
+            body = str(js(page, "document.body ? document.body.innerText.slice(0, 400) : ''", timeout=10))
         except Exception:
             pass
         if "Couldn't sign you in" in body or "Tidak dapat" in body or "This browser or app may not be secure" in body:
+            dump_state(page, "login-denied")
             screenshot(page, "login-denied")
             die("Google menolak login dari browser terotomasi: %s" % href[:200])
         time.sleep(1.5)
     else:
+        dump_state(page, "login-loop")
         screenshot(page, "login-loop")
-        die("Login tidak selesai dalam batas waktu. Lihat screenshot.")
+        die("Login tidak selesai dalam batas waktu. Lihat DEBUG + screenshot.")
 
     log("login OK -> %s" % (js(page, "location.href", timeout=10) or "")[:120])
 
