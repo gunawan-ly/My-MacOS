@@ -339,6 +339,26 @@ def click(page, selector):
                          "el.click();return true;})()" % json.dumps(selector), timeout=15))
 
 
+def press_enter(page):
+    page.call("Input.dispatchKeyEvent", {"type": "keyDown", "key": "Enter", "code": "Enter",
+                                         "text": "\r", "unmodifiedText": "\r",
+                                         "windowsVirtualKeyCode": 13, "nativeVirtualKeyCode": 13})
+    page.call("Input.dispatchKeyEvent", {"type": "keyUp", "key": "Enter", "code": "Enter",
+                                         "windowsVirtualKeyCode": 13, "nativeVirtualKeyCode": 13})
+
+
+def click_center(page, selector):
+    rect = js(page, "(function(){var el=document.querySelector(%s);if(!el)return null;"
+                    "el.scrollIntoView({block:'center'});var b=el.getBoundingClientRect();"
+                    "return {x:b.x+b.width/2,y:b.y+b.height/2};})()" % json.dumps(selector), timeout=15)
+    if not rect:
+        return False
+    for t in ("mousePressed", "mouseReleased"):
+        page.call("Input.dispatchMouseEvent", {"type": t, "x": float(rect["x"]), "y": float(rect["y"]),
+                                               "button": "left", "clickCount": 1})
+    return True
+
+
 def screenshot(page, tag):
     try:
         r = page.call("Page.captureScreenshot", {"format": "png"})
@@ -429,34 +449,51 @@ def login_google(page, user, password):
 
     type_into(page, "input[type=password], #password, input[name=Passwd]", password)
     time.sleep(0.5)
-    if not click(page, "#passwordNext"):
-        js(page, "(function(){var el=document.querySelector('form')||document;"
-                 "var e=new Event('submit',{bubbles:true,cancelable:true});"
-                 "if(el&&el.dispatchEvent)el.dispatchEvent(e);})()")
+    press_enter(page)
 
-    # Tunggu keluar dari alur signin menuju continue (atau challenge).
+    # Tunggu keluar dari alur signin menuju continue. Halaman /signin/challenge/pwd
+    # adalah langkah password (normal), BUKAN 2FA — 2FA hanya challenge mfa/otp.
     deadline = time.time() + 90
+    tries = 0
     while time.time() < deadline:
+        tries += 1
         try:
             href = js(page, "location.href", timeout=10) or ""
         except Exception:
             time.sleep(1.5)
             continue
-        if "challenge" in href or "signin/v2/challenge" in href or "ite/boot" in href:
+        body = ""
+        try:
+            body = str(js(page, "document.body ? document.body.innerText.slice(0, 500) : ''", timeout=10))
+        except Exception:
+            pass
+
+        if re.search(r"Wrong password|Password yang salah|Password salah|Tidak dapat masuk", body, re.I):
+            dump_state(page, "login-wrongpw")
+            screenshot(page, "login-wrongpw")
+            die("Password tampaknya salah. Periksa secret GOOGLE_PASS.")
+
+        if re.search(r"signin/(v2/)?challenge/(mfa|otp|totp|sms|emailprompt|authenticator|legacypassword)|"
+                     r"twofactorauth|Verification code|verification code|2-Step|kode verifikasi", body or href):
             dump_state(page, "login-2fa")
             screenshot(page, "login-2fa")
             die("Google minta verifikasi tambahan (2FA/challenge). Pakai akun tanpa 2FA atau alur cookie.")
+
         if href.startswith("https://remotedesktop.google.com"):
             break
-        body = ""
-        try:
-            body = str(js(page, "document.body ? document.body.innerText.slice(0, 400) : ''", timeout=10))
-        except Exception:
-            pass
-        if "Couldn't sign you in" in body or "Tidak dapat" in body or "This browser or app may not be secure" in body:
+
+        if "Couldn't sign you in" in body or "This browser or app may not be secure" in body:
             dump_state(page, "login-denied")
             screenshot(page, "login-denied")
             die("Google menolak login dari browser terotomasi: %s" % href[:200])
+
+        # Masih di halaman password -> coba submit ulang beberapa kali.
+        if re.search(r"challenge/pwd|signin/identifier", href):
+            if tries <= 5:
+                if not click_center(page, "#passwordNext, [id$=Next]"):
+                    press_enter(page)
+            time.sleep(1.5)
+            continue
         time.sleep(1.5)
     else:
         dump_state(page, "login-loop")
