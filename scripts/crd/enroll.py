@@ -47,6 +47,14 @@ CODE_FILE = "/tmp/crd.code"
 SESSION_FILE = os.environ.get("CRD_SESSION_FILE", "/tmp/crd-session-cookies.json")
 SESSION_FRESH = "/tmp/crd-session-fresh"
 
+SCHEMA_VERSION = 2
+# Nama cookie auth Google. Daftar AUTH_COOKIES = bukti "sudah login": jika
+# setidaknya satu ada di browser, sesi dianggap valid utk disimpan / direstore.
+AUTH_COOKIES = (
+    "SID", "__Secure-1PSID", "__Secure-3PSID",
+    "SAPISID", "HSID",
+)
+
 CHROME_CANDIDATES = [
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
     "/Applications/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing",
@@ -1326,43 +1334,95 @@ def _session_cookies(page):
     return keep or None
 
 
+def _has_auth_cookie(cookies):
+    """True bila setidaknya satu cookie auth Google ada (bukti sesi sudah masuk)."""
+    return any(c.get("name") in AUTH_COOKIES for c in (cookies or []))
+
+
+def _now():
+    return int(time.time())
+
+
+def _drop_expired(cookies):
+    kept, dropped = [], 0
+    for c in cookies:
+        exp = c.get("expirationDate")
+        if exp is not None and isinstance(exp, (int, float)) and exp <= _now():
+            dropped += 1
+            continue
+        kept.append(c)
+    return kept, dropped
+
+
 def save_session_cookies(page):
-    """Simpan semua cookie .google.com ke CRD_SESSION_FILE (atomik) + penanda fresh."""
+    """Simpan cache sesi (manifest v2) atomik + penanda fresh, HANYA bila
+    masih ada cookie auth (login benar-benar berhasil)."""
     cookies = _session_cookies(page)
     if not cookies:
         log("Peringatan: tidak ada cookie google.com utk disimpan ke cache sesi.")
+        _unmark_fresh()
         return False
+    if not _has_auth_cookie(cookies):
+        log("Cache TIDAK disimpan: cookie auth (SID/__Secure-1PSID/dst) tidak ada — login belum selesai.")
+        _unmark_fresh()
+        return False
+    cookies, dropped = _drop_expired(cookies)
+    account = os.environ.get("GOOGLE_USER", "?").strip()
+    domains = sorted({str(c.get("domain", "")) for c in cookies})
+    manifest = {
+        "schema_version": SCHEMA_VERSION,
+        "account": account,
+        "saved_at": _now(),
+        "cookie_count": len(cookies),
+        "domains": domains,
+        "cookies": cookies,
+    }
+    raw = json.dumps(manifest).encode("utf-8")
     tmp = SESSION_FILE + ".tmp.%d" % os.getpid()
     try:
-        with open(tmp, "w") as f:
-            json.dump({"saved_at": int(time.time()), "cookies": cookies}, f)
+        with open(tmp, "wb") as f:
+            f.write(raw)
         os.replace(tmp, SESSION_FILE)
     except Exception as e:
         log("Peringatan: gagal menyimpan cache sesi %s (%s)" % (SESSION_FILE, str(e)[:120]))
-        try:
-            os.unlink(SESSION_FRESH)
-        except Exception:
-            pass
+        _unmark_fresh()
         return False
     try:
         with open(SESSION_FRESH, "w") as f:
-            f.write(str(int(time.time())))
+            f.write(str(_now()))
     except Exception:
         pass
-    log("Cache sesi disimpan: %d cookie -> %s" % (len(cookies), SESSION_FILE))
+    log("SIMPAN cache sesi: akun=%s, %d cookie (domain=%s), %.1f KB -> %s"
+        % (account, len(cookies), ",".join(domains), len(raw) / 1024.0, SESSION_FILE))
+    if dropped:
+        log("  (%d cookie kedaluwarsa dibuang dari simpanan)" % dropped)
     return True
 
 
-def _load_session_cookies():
+def _unmark_fresh():
+    try:
+        os.unlink(SESSION_FRESH)
+    except Exception:
+        pass
+
+
+def _load_session_manifest():
+    """Baca & validasi manifest cache sesi. Return dict atau None."""
     try:
         with open(SESSION_FILE, "r") as f:
             data = json.load(f)
-        cookies = data.get("cookies")
-        if not isinstance(cookies, list) or not cookies:
-            return None
-        return cookies
     except Exception:
         return None
+    if not isinstance(data, dict):
+        return None
+    if data.get("schema_version") != SCHEMA_VERSION:
+        log("Cache sesi punya schema %r (diharapkan %d) — diabaikan."
+            % (data.get("schema_version"), SCHEMA_VERSION))
+        return None
+    cookies = data.get("cookies")
+    if not isinstance(cookies, list) or not cookies:
+        return None
+    return data
 
 
 def _inject_session_cookies(page, cookies):
@@ -1381,21 +1441,40 @@ def try_restore_session(page):
     """
     if not os.path.exists(SESSION_FILE):
         return None
-    cookies = _load_session_cookies()
-    if not cookies:
-        log("Cache sesi ada tapi tidak dapat dibaca; login penuh ulang.")
+    data = _load_session_manifest()
+    if not data:
+        log("Cache sesi tak dapat dipakai (bukan manifest v2); login penuh ulang.")
+        _unmark_fresh()
         return None
-    log("Cache sesi ditemukan (%d cookie); inject & uji tanpa OTP..." % len(cookies))
+
+    account = str(data.get("account", "")).strip()
+    user = os.environ.get("GOOGLE_USER", "?").strip()
+    if account and user and account.lower() != user.lower():
+        log("Cache sesi milik akun %r != akun saat ini %r — DIABAIKAN (account guard)."
+            % (account, user))
+        _unmark_fresh()
+        return None
+
+    cookies, dropped = _drop_expired(data.get("cookies", []))
+    if not cookies:
+        log("Cache sesi sudah kadaluwarsa semua; login penuh ulang.")
+        _unmark_fresh()
+        return None
+    log("Cache sesi: akun=%s, %d cookie dimuat (%d kedaluwarsa dibuang); uji tanpa OTP..."
+        % (account or user, len(cookies), dropped))
     try:
         _inject_session_cookies(page, cookies)
         page.call("Page.navigate", {"url": "https://remotedesktop.google.com/access"})
         time.sleep(5)
         href = js(page, "location.href", timeout=10) or ""
-        if "accounts.google.com" not in href:
+        if "accounts.google.com" not in href and _has_auth_cookie(_session_cookies(page)):
+            log("RESTORE cache sesi: OK (masuk tanpa halaman sign-in).")
             return grab_session(page)
-        log("Cache sesi kedaluwarsa/tak valid (masih di halaman sign-in).")
+        log("RESTORE cache sesi: GAGAL (sesi tak valid/sudah kedaluwarsa).")
+        _unmark_fresh()
     except Exception as e:
         log("Restore cache sesi gagal (%s); login penuh ulang." % str(e)[:120])
+        _unmark_fresh()
     return None
 
 

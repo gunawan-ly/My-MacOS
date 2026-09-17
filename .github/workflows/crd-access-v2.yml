@@ -15,6 +15,18 @@ on:
         description: 'Security code OTP dari HP (Settings > Google > Manage Google Account > Security & sign-in > Security code). Diperlukan saat job memakai perangkat/login baru; jika kosong memakai secret CRD_OTP.'
         required: false
         default: ''
+      session_mode:
+        description: "'restore' = pakai cache sesi terbaru (default). 'fresh' = ABAIKAN cache, paksa login+OTP sekali lalu simpan cookie baru (untuk mereset sesi yang dianggap usang)."
+        required: false
+        default: 'restore'
+        type: choice
+        options:
+          - restore
+          - fresh
+      cache_key:
+        description: 'Opsional. Pin key cache SPESIFIK untuk direstore (contoh: crd-session-me@mail.com-35185623180). Biarkan kosong utk memakai cache terbaru.'
+        required: false
+        default: ''
 
 run-name: 'CRD V2 (${{ github.run_id }})'
 
@@ -79,11 +91,12 @@ jobs:
           echo "Configuration valid."
 
       - name: Restore Cache Sesi CRD (cookie Google)
+        if: ${{ inputs.session_mode != 'fresh' }}
         id: crd-cache-restore
         uses: actions/cache/restore@v4
         with:
           path: /tmp/crd-session-cookies.json
-          key: crd-session-${{ secrets.GOOGLE_USER }}-${{ github.run_id }}
+          key: ${{ inputs.cache_key || format('crd-session-{0}-{1}', secrets.GOOGLE_USER, github.run_id) }}
           restore-keys: |
             crd-session-${{ secrets.GOOGLE_USER }}-
             crd-session-
@@ -91,8 +104,29 @@ jobs:
 
       - name: Cek ketersediaan cache sesi
         run: |
+          if [ "${{ inputs.session_mode }}" = "fresh" ]; then
+            echo "Mode: fresh — cache DIABAIKAN, login+OTP paksa, cookie baru akan disimpan."
+            rm -f /tmp/crd-session-cookies.json /tmp/crd-session-fresh
+          else
+            echo "Mode: ${{ inputs.cache_key && format('manual cache_key={0}', inputs.cache_key) || 'restore (cache terbaru)' }}"
+          fi
           if [ -f /tmp/crd-session-cookies.json ]; then
-            echo "Cache sesi ada — login diharapkan tanpa OTP."
+          python3 - <<'PY'
+          import json, os
+          p = "/tmp/crd-session-cookies.json"
+          try:
+              d = json.load(open(p))
+              c = d.get("cookies") or []
+              print("Cache sesi ada: akun=%s cookie=%d ukuran=%.1f KB" % (
+                  d.get("account", "?"), len(c), os.path.getsize(p) / 1024.0))
+              dm = d.get("domains")
+              if dm:
+                  print("  domain: %s" % ", ".join(dm))
+              if d.get("schema_version") != 2:
+                  print("  PERINGATAN: schema_cache=%s (akan ditolak oleh enroll)" % d.get("schema_version"))
+          except Exception as e:
+              print("Cache sesi ada tapi tidak terbaca: %s" % e)
+          PY
           else
             echo "::warning::Cache sesi kosong (belum ada / kedaluwarsa)."
             echo "::warning::Jika Google meminta verifikasi, isi input 'otp' saat"
