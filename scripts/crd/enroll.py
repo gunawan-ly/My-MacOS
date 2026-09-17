@@ -19,7 +19,9 @@ paket CRD macOS; lihat Documentation.md) dengan tiga tahap yang terbukti:
 Akar yang butuh izin akun tanpa 2FA; bila Google minta 2FA/challenge, skrip
 berhenti dgn pesan jelas + screenshot debug di /tmp/crd-*.png.
 
-Env: GOOGLE_USER, GOOGLE_PASS, CRD_PIN, CRD_NAME (opsional), GITHUB_RUN_ID.
+Env: GOOGLE_USER, GOOGLE_PASS, CRD_PIN, CRD_OTP (opsional), CRD_SESSION_FILE
+     (opsional, cache cookie utk skip OTP di job berikutnya), CRD_CLEANUP
+     (opsional), CRD_NAME (opsional), GITHUB_RUN_ID.
 Output stdout: JSON config host.
 """
 
@@ -42,6 +44,7 @@ PORT = 9223
 CLIENT_ID = "440925447803-m890isgsr23kdkcu2erd4mirnrjalf98.apps.googleusercontent.com"
 SECRETS_OUT = "/tmp/crd-session.json"
 CODE_FILE = "/tmp/crd.code"
+SESSION_FILE = os.environ.get("CRD_SESSION_FILE", "/tmp/crd-session-cookies.json")
 
 CHROME_CANDIDATES = [
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
@@ -1291,6 +1294,99 @@ def cleanup_hosts(jar, at, keep_host_id):
 
 
 # ---------------------------------------------------------------------------
+# Cache sesi (cookie Google) agar job berikutnya tidak perlu OTP lagi.
+# Cookie = "trusted session" akun; disimpan ke CRD_SESSION_FILE (default
+# /tmp/crd-session-cookies.json), di-upload workflow via actions/cache & direstore
+# di job baru lalu di-inject lewat CDP (Network.setCookies) ke profil Chrome
+# fresh — karena di-inject sebagai nilai cookie, tidak butuh migrasi Keychain.
+# ---------------------------------------------------------------------------
+def _session_cookies(page):
+    try:
+        cookies = page.call("Network.getAllCookies").get("cookies", [])
+    except Exception:
+        return None
+    keep = []
+    for c in cookies:
+        d = str(c.get("domain", ""))
+        if not c.get("name"):
+            continue
+        if (d.endswith(".google.com") or d == "google.com"
+                or d.endswith(".googleusercontent.com")):
+            keep.append({
+                "name": c["name"], "value": c.get("value", ""),
+                "domain": d, "path": c.get("path", "/"),
+                "secure": bool(c.get("secure")), "httpOnly": bool(c.get("httpOnly")),
+                "expirationDate": c.get("expirationDate"),
+                "sameSite": c.get("sameSite", "Unspecified"),
+            })
+    return keep or None
+
+
+def save_session_cookies(page):
+    """Simpan semua cookie .google.com ke CRD_SESSION_FILE (atomik)."""
+    cookies = _session_cookies(page)
+    if not cookies:
+        log("Peringatan: tidak ada cookie google.com utk disimpan ke cache sesi.")
+        return False
+    tmp = SESSION_FILE + ".tmp.%d" % os.getpid()
+    try:
+        with open(tmp, "w") as f:
+            json.dump({"saved_at": int(time.time()), "cookies": cookies}, f)
+        os.replace(tmp, SESSION_FILE)
+    except Exception as e:
+        log("Peringatan: gagal menyimpan cache sesi %s (%s)" % (SESSION_FILE, str(e)[:120]))
+        return False
+    log("Cache sesi disimpan: %d cookie -> %s" % (len(cookies), SESSION_FILE))
+    return True
+
+
+def _load_session_cookies():
+    try:
+        with open(SESSION_FILE, "r") as f:
+            data = json.load(f)
+        cookies = data.get("cookies")
+        if not isinstance(cookies, list) or not cookies:
+            return None
+        return cookies
+    except Exception:
+        return None
+
+
+def _inject_session_cookies(page, cookies):
+    """Network.setCookies — inject cookie ke profil Chrome fresh (tanpa OTP)."""
+    try:
+        page.call("Network.enable", {})
+    except Exception:
+        pass
+    page.call("Network.setCookies", {"cookies": cookies})
+
+
+def try_restore_session(page):
+    """
+    Coba pakai cache sesi: inject cookie + buka /access.
+    Return (jar, at) bila masuk tanpa halaman sign-in, else None.
+    """
+    if not os.path.exists(SESSION_FILE):
+        return None
+    cookies = _load_session_cookies()
+    if not cookies:
+        log("Cache sesi ada tapi tidak dapat dibaca; login penuh ulang.")
+        return None
+    log("Cache sesi ditemukan (%d cookie); inject & uji tanpa OTP..." % len(cookies))
+    try:
+        _inject_session_cookies(page, cookies)
+        page.call("Page.navigate", {"url": "https://remotedesktop.google.com/access"})
+        time.sleep(5)
+        href = js(page, "location.href", timeout=10) or ""
+        if "accounts.google.com" not in href:
+            return grab_session(page)
+        log("Cache sesi kedaluwarsa/tak valid (masih di halaman sign-in).")
+    except Exception as e:
+        log("Restore cache sesi gagal (%s); login penuh ulang." % str(e)[:120])
+    return None
+
+
+# ---------------------------------------------------------------------------
 def main():
     user = os.environ.get("GOOGLE_USER", "").strip()
     password = os.environ.get("GOOGLE_PASS", "")
@@ -1323,8 +1419,16 @@ def main():
     try:
         page = cdp_connect()
         setup_page(page)
-        login_google(page, user, password)
-        jar, at = grab_session(page)
+
+        restored = try_restore_session(page)
+        if restored:
+            jar, at = restored
+            log("Login via cache sesi (tanpa OTP).")
+        else:
+            login_google(page, user, password)
+            jar, at = grab_session(page)
+
+        save_session_cookies(page)
 
         nm = NativeMessaging(nm_path)
         keys = nm.call({"type": "generateKeyPair"}, timeout=60)

@@ -78,12 +78,32 @@ jobs:
 
           echo "Configuration valid."
 
+      - name: Cache Sesi CRD (cookie Google)
+        uses: actions/cache@v4
+        with:
+          path: /tmp/crd-session-cookies.json
+          key: crd-session-${{ secrets.GOOGLE_USER }}
+          restore-keys: |
+            crd-session-
+          enableCrossOsArchive: true
+
+      - name: Cek ketersediaan cache sesi
+        run: |
+          if [ -f /tmp/crd-session-cookies.json ]; then
+            echo "Cache sesi ada — login diharapkan tanpa OTP."
+          else
+            echo "::warning::Cache sesi kosong (belum ada / kedaluwarsa)."
+            echo "::warning::Jika Google meminta verifikasi, isi input 'otp' saat"
+            echo "::warning::workflow_dispatch dgn security code dari HP."
+          fi
+
       - name: Setup Chrome Remote Desktop (V2)
         env:
           CRD_NAME: ${{ inputs.hostname }}
           GITHUB_RUN_ID: ${{ github.run_id }}
           KEEP_ALIVE_MINUTES: ${{ inputs.keep_alive_minutes }}
           CRD_OTP: ${{ inputs.otp || secrets.CRD_OTP }}
+          CRD_SESSION_FILE: /tmp/crd-session-cookies.json
         run: |
           bash scripts/crd/setup_crd_v2.sh
 
