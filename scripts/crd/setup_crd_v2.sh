@@ -3,8 +3,11 @@
 # setup_crd_v2.sh — Setup Chrome Remote Desktop (V2), berdasarkan temuan
 # lapangan yang menggantikan setup_crd.sh lama:
 #
-#   1. Install host dari DMG resmi (cask homebrew TIDAK memuat remoting_start_host).
-#   2. Registrasi headless via `remoting_start_host --code` (secret CRD_CODE).
+#   1. Install host dari DMG resmi (paket macOS TIDAK memuat remoting_start_host
+#      — itu binary khusus Linux; di sini enrollment dijalankan script
+#      scripts/crd/enroll.py: login Google di Chrome via CDP + RegisterHost
+#      batchexecute + konfigurasi lewat native_messaging_host).
+#   2. Registrasi headless via enroll.py (secret GOOGLE_USER / GOOGLE_PASS).
 #   3. Fix TCC layar (penyebab layar hitam): baris ScreenCapture yang sudah
 #      ada adalah milik bundle id dengan csreq tapi auth_value=0 (DENIED).
 #      Di sini dipakai UPDATE auth_value=2 sambil MENYIMPAN csreq — INSERT baru
@@ -15,13 +18,15 @@
 #   5. Verifikasi riil: host siap, tangkapan layar berisi, input bergerak.
 #
 # Env (dari workflow / secret):
-#   CRD_CODE - kode OAuth sekali pakai dari https://remotedesktop.google.com/headless
-#   CRD_PIN  - PIN koneksi (angka 6+ digit)
-#   CRD_NAME - nama host di aplikasi CRD (opsional)
+#   GOOGLE_USER - email akun Google pemilik CRD (harus tanpa 2FA otomatis)
+#   GOOGLE_PASS - password akun
+#   CRD_PIN     - PIN koneksi (angka 6+ digit)
+#   CRD_NAME    - nama host di aplikasi CRD (opsional)
 #
 set -uo pipefail
 
-CRD_CODE="${CRD_CODE:-}"
+GOOGLE_USER="${GOOGLE_USER:-}"
+GOOGLE_PASS="${GOOGLE_PASS:-}"
 CRD_NAME="${CRD_NAME:-mac-${GITHUB_RUN_ID:-runner}}"
 CRD_PIN="${CRD_PIN:-}"
 KEEP_ALIVE_MINUTES="${KEEP_ALIVE_MINUTES:-355}"
@@ -67,22 +72,13 @@ discover_host_bin() {
     -name 'remoting_me2me_host' -type f 2>/dev/null | head -1
 }
 
-discover_start_host() {
-  for c in \
-    "/Applications/Chrome Remote Desktop.app/Contents/MacOS/remoting_start_host" \
-    "/Applications/Google Chrome Remote Desktop.app/Contents/MacOS/remoting_start_host" \
-    "/Applications/Chrome Remote Desktop Host.app/Contents/MacOS/remoting_start_host"; do
-    [ -x "$c" ] && { printf '%s\n' "$c"; return 0; }
-  done
-  find /Library/PrivilegedHelperTools /Applications -name 'remoting_start_host' -type f 2>/dev/null | head -1
-}
-
 # ---------------------------------------------------------------------------
-# Install host dari DMG resmi (memberikan remoting_start_host + host service)
+# Install host dari DMG resmi (memberikan host service + native_messaging_host;
+# `remoting_start_host` TIDAK disediakan di macOS — enrollment via enroll.py)
 # ---------------------------------------------------------------------------
 install_host() {
-  if [ -n "$(discover_start_host)" ]; then
-    log "Host sudah terinstal (remoting_start_host ditemukan)."
+  if [ -n "$(discover_host_bin)" ]; then
+    log "Host service sudah terinstal (remoting_me2me_host ditemukan)."
     return 0
   fi
 
@@ -114,25 +110,14 @@ install_host() {
       && run_bounded 300 "brew install --cask chrome-remote-desktop-host" >/dev/null || true
   fi
 
-  local HB SH
+  local HB
   HB="$(discover_host_bin)"
   [ -n "$HB" ] || die "remoting_me2me_host tidak ditemukan setelah instalasi."
-  SH="$(discover_start_host)"
-  log "Host terinstal. remoting_start_host: ${SH:-(tidak ditemukan)}"
+  log "Host terinstal: $HB"
   if codesign -v "$HB" 2>/dev/null; then
     log "codesign OK: $(codesign -dv "$HB" 2>&1 | grep -m1 'Authority=')"
   else
     log "PERINGATAN: codesign host gagal verifikasi (host mungkin diubah; perlu binary asli Google, Team EQHXZ8M8AV)."
-  fi
-}
-
-# Karantina settings.json korup/kedaluwarsa (klien OAuth lama / kutip ganda).
-# File ini cache; host akan menulis ulang sendiri.
-quarantine_settings() {
-  if [ -f "$SETTINGS_FILE" ]; then
-    local bak
-    bak="${SETTINGS_FILE}.bak.$(date +%s)"
-    sudo -n mv "$SETTINGS_FILE" "$bak" && log "settings.json lama dikarantina -> $bak"
   fi
 }
 
@@ -334,29 +319,39 @@ bounce_host() {
 }
 
 # ---------------------------------------------------------------------------
-# Registrasi headless (dua jalur: --pin dulu, lalu interaktif via stdin)
+# Registrasi host (enrollment). Gantikan `remoting_start_host` (khusus Linux)
+# dengan scripts/crd/enroll.py yang meniru alurnya di macOS:
+#   Chrome+CDP login akun -> cookie+`at` -> batchexecute RMf1af RegisterHost
+#   -> native_messaging_host (keypair, pin hash, robot refresh token).
+# enroll.py mencetak JSON config ke stdout; hasil diletakkan ke CONFIG_FILE
+# dengan mode 644 (host jalan sebagai user biasa).
 # ---------------------------------------------------------------------------
-register_host() {
-  local SH="$1"
-  [ -n "$SH" ] || die "remoting_start_host tidak ditemukan; tidak bisa registrasi headless."
-  log "Registrasi headless host '$CRD_NAME' ke akun pemilik CRD_CODE ..."
+enroll_host() {
+  local ENROLL TMP CONFIG_JSON rc
+  ENROLL="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/enroll.py"
+  [ -f "$ENROLL" ] || die "enroll.py tidak ditemukan: $ENROLL"
+  command -v python3 >/dev/null 2>&1 || die "python3 tidak ada."
 
-  if run_bounded 120 \
-     "'$SH' --code='$CRD_CODE' --redirect-url='https://remotedesktop.google.com/_/oauthredirect' --name='$CRD_NAME' --pin='$CRD_PIN'" \
-     >/tmp/crd.start.log 2>&1; then
-    log "Registrasi (jalur --pin) OK."
-    return 0
+  log "Registrasi host '$CRD_NAME' ke akun $GOOGLE_USER (login Chrome via CDP)..."
+  TMP="$(mktemp /tmp/crd.config.XXXXXX.json)"
+  CONFIG_JSON="$(env CRD_NAME="$CRD_NAME" GOOGLE_USER="$GOOGLE_USER" \
+                    GOOGLE_PASS="$GOOGLE_PASS" CRD_PIN="$CRD_PIN" \
+                    python3 "$ENROLL" 2>/tmp/crd.enroll.err.log)"
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    cat /tmp/crd.enroll.err.log 2>/dev/null || true
+    die "Enrollment gagal. Penyebab umum: 2FA/CAPTCHA, password salah, Chrome belum terpasang."
   fi
-  log "Jalur --pin gagal; coba interaktif via stdin (name, pin, pin)..."
-  if run_bounded 120 \
-     "printf '%s\n%s\n%s\n' '$CRD_NAME' '$CRD_PIN' '$CRD_PIN' | '$SH' --code='$CRD_CODE' --redirect-url='https://remotedesktop.google.com/_/oauthredirect' --name='$CRD_NAME'" \
-     >/tmp/crd.start.log 2>&1; then
-    log "Registrasi (jalur stdin) OK."
-    return 0
-  fi
-  log "=== /tmp/crd.start.log (hasil registrasi) ==="
-  cat /tmp/crd.start.log 2>/dev/null || true
-  die "Registrasi headless gagal. CRD_CODE kedaluwarsa/terpakai? Ambil kode baru dan jalankan ulang."
+  printf '%s' "$CONFIG_JSON" > "$TMP" || die "Output enroll.py tidak dapat ditulis."
+  python3 -c "import json,sys; json.load(open('$TMP'))" 2>/dev/null \
+    || { printf 'Output enroll.py (bukan JSON):\n%s\n' "$CONFIG_JSON" >&2; die "Output enroll.py bukan JSON valid."; }
+
+  sudo -n install -o root -g wheel -m 644 "$TMP" "$CONFIG_FILE" \
+    || die "Gagal menulis $CONFIG_FILE."
+  rm -f "$TMP"
+  log "Config host tertulis (mode 644): $CONFIG_FILE"
+
+  sudo -n rm -f "$SETTINGS_FILE" 2>/dev/null || true
 }
 
 wake_display() {
@@ -444,9 +439,11 @@ PY
 
 # ---------------------------------------------------------------------------
 main() {
-  [ -n "$CRD_CODE" ] || die "CRD_CODE kosong."
-  case "$CRD_CODE" in 4/*) ;; *) die "CRD_CODE harus mulai '4/'.";; esac
+  [ -n "$GOOGLE_USER" ] || die "GOOGLE_USER kosong (email akun pemilik CRD)."
+  case "$GOOGLE_USER" in *@*) ;; *) die "GOOGLE_USER bukan email valid.";; esac
+  [ -n "$GOOGLE_PASS" ] || die "GOOGLE_PASS kosong."
   [ -n "$CRD_PIN" ] || die "CRD_PIN kosong."
+  echo "$CRD_PIN" | grep -Eq '^[0-9]{6,}$' || die "CRD_PIN harus angka 6+ digit."
   command -v sqlite3 >/dev/null 2>&1 || die "sqlite3 tidak ada."
   command -v python3 >/dev/null 2>&1 || die "python3 tidak ada."
 
@@ -457,12 +454,8 @@ main() {
   install_host
   local HOST_BIN
   HOST_BIN="$(discover_host_bin)"
-  quarantine_settings
 
-  register_host "$(discover_start_host)"
-
-  sudo -n chmod 644 "$CONFIG_FILE" 2>/dev/null && log "chmod 644 $CONFIG_FILE" \
-    || log "! chmod 644 tidak berlaku (config mungkin belum ada) — akan dicek host."
+  enroll_host
 
   grant_tcc "$HOST_BIN"
   setup_launchagent "$HOST_BIN"
@@ -473,7 +466,7 @@ main() {
   echo ""
   echo "=========================================================================="
   echo " CRD (V2) READY — cara koneksi:"
-  echo "   1. Buka Chrome Remote Desktop (app/web) dgn akun pemilik CRD_CODE."
+  echo "   1. Buka Chrome Remote Desktop (app/web) dgn akun $GOOGLE_USER."
   echo "   2. Pilih host  : $CRD_NAME"
   echo "   3. Masukkan PIN: $CRD_PIN"
   echo "   Keep-alive    : ~$KEEP_ALIVE_MINUTES menit (sesuai batas job)."

@@ -25,7 +25,8 @@ jobs:
     timeout-minutes: 360
 
     env:
-      CRD_CODE: ${{ secrets.CRD_CODE }}
+      GOOGLE_USER: ${{ secrets.GOOGLE_USER }}
+      GOOGLE_PASS: ${{ secrets.GOOGLE_PASS }}
       CRD_PIN: ${{ secrets.CRD_PIN }}
 
     steps:
@@ -36,17 +37,22 @@ jobs:
         run: |
           set -u
 
-          if [ -z "${CRD_CODE:-}" ]; then
-            echo "::error::Secret CRD_CODE kosong. Ambil kode dari https://remotedesktop.google.com/headless lalu set secret CRD_CODE."
+          if [ -z "${GOOGLE_USER:-}" ]; then
+            echo "::error::Secret GOOGLE_USER kosong. Set email akun Google pemilik CRD."
             exit 1
           fi
-          case "$CRD_CODE" in
-            4/*) ;;
+          case "$GOOGLE_USER" in
+            *@*) ;;
             *)
-              echo "::error::CRD_CODE harus dimulai dengan '4/'. Dapatkan kode baru dari https://remotedesktop.google.com/headless."
+              echo "::error::GOOGLE_USER harus berupa email."
               exit 1
               ;;
           esac
+
+          if [ -z "${GOOGLE_PASS:-}" ]; then
+            echo "::error::Secret GOOGLE_PASS belum dikonfigurasi."
+            exit 1
+          fi
 
           if [ -z "${CRD_PIN:-}" ]; then
             echo "::error::Secret CRD_PIN belum dikonfigurasi."
