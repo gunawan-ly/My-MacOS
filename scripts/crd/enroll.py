@@ -45,6 +45,7 @@ CLIENT_ID = "440925447803-m890isgsr23kdkcu2erd4mirnrjalf98.apps.googleuserconten
 SECRETS_OUT = "/tmp/crd-session.json"
 CODE_FILE = "/tmp/crd.code"
 SESSION_FILE = os.environ.get("CRD_SESSION_FILE", "/tmp/crd-session-cookies.json")
+SESSION_FRESH = "/tmp/crd-session-fresh"
 
 CHROME_CANDIDATES = [
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
@@ -1270,9 +1271,12 @@ def delete_host(jar, at, host_id):
 
 
 def cleanup_hosts(jar, at, keep_host_id):
-    """Hapus semua host lain milik akun, sisakan keep_host_id (yang baru)."""
-    if os.environ.get("CRD_CLEANUP", "1").strip() not in ("1", "true", "yes"):
-        log("CRD_CLEANUP nonaktif; host lain tidak dihapus.")
+    """Hapus semua host lain milik akun, sisakan keep_host_id (yang baru).
+    DEFAULT NONAKTIF (CRD_CLEANUP=0): host lama dibiarkan menumpuk, dihapus
+    manual lewat UI CRD. Aktifkan eksplisit (CRD_CLEANUP=1) bila diinginkan.
+    """
+    if os.environ.get("CRD_CLEANUP", "0").strip() not in ("1", "true", "yes"):
+        log("CRD_CLEANUP nonaktif; host lama TIDAK dihapus (dibiarkan menumpuk).")
         return
     try:
         ids = get_host_list(jar, at)
@@ -1323,7 +1327,7 @@ def _session_cookies(page):
 
 
 def save_session_cookies(page):
-    """Simpan semua cookie .google.com ke CRD_SESSION_FILE (atomik)."""
+    """Simpan semua cookie .google.com ke CRD_SESSION_FILE (atomik) + penanda fresh."""
     cookies = _session_cookies(page)
     if not cookies:
         log("Peringatan: tidak ada cookie google.com utk disimpan ke cache sesi.")
@@ -1335,7 +1339,16 @@ def save_session_cookies(page):
         os.replace(tmp, SESSION_FILE)
     except Exception as e:
         log("Peringatan: gagal menyimpan cache sesi %s (%s)" % (SESSION_FILE, str(e)[:120]))
+        try:
+            os.unlink(SESSION_FRESH)
+        except Exception:
+            pass
         return False
+    try:
+        with open(SESSION_FRESH, "w") as f:
+            f.write(str(int(time.time())))
+    except Exception:
+        pass
     log("Cache sesi disimpan: %d cookie -> %s" % (len(cookies), SESSION_FILE))
     return True
 

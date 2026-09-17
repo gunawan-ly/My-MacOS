@@ -78,12 +78,14 @@ jobs:
 
           echo "Configuration valid."
 
-      - name: Cache Sesi CRD (cookie Google)
-        uses: actions/cache@v4
+      - name: Restore Cache Sesi CRD (cookie Google)
+        id: crd-cache-restore
+        uses: actions/cache/restore@v4
         with:
           path: /tmp/crd-session-cookies.json
-          key: crd-session-${{ secrets.GOOGLE_USER }}
+          key: crd-session-${{ secrets.GOOGLE_USER }}-${{ github.run_id }}
           restore-keys: |
+            crd-session-${{ secrets.GOOGLE_USER }}-
             crd-session-
           enableCrossOsArchive: true
 
@@ -104,8 +106,26 @@ jobs:
           KEEP_ALIVE_MINUTES: ${{ inputs.keep_alive_minutes }}
           CRD_OTP: ${{ inputs.otp || secrets.CRD_OTP }}
           CRD_SESSION_FILE: /tmp/crd-session-cookies.json
+          CRD_CLEANUP: "0"
         run: |
           bash scripts/crd/setup_crd_v2.sh
+
+      - name: Flag sesi segar (login OK di run ini)
+        id: crd-fresh
+        run: |
+          if [ -f /tmp/crd-session-fresh ]; then
+            echo "fresh=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "fresh=0" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Save cache sesi (SELALU jalan walau run error sesudahnya)
+        if: ${{ always() && steps.crd-fresh.outputs.fresh == '1' }}
+        uses: actions/cache/save@v4
+        with:
+          path: /tmp/crd-session-cookies.json
+          key: crd-session-${{ secrets.GOOGLE_USER }}-${{ github.run_id }}
+          enableCrossOsArchive: true
 
       - name: Upload Debug Artifacts
         if: ${{ always() }}

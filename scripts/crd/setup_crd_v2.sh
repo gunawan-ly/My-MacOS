@@ -40,6 +40,12 @@ TCC_DB="/Library/Application Support/com.apple.TCC/TCC.db"
 BUNDLE_ID="com.google.chromeremotedesktop.me2me-host"
 DMG_URL="https://dl.google.com/chrome-remote-desktop/chromeremotedesktop.dmg"
 
+# Fallback csreq (designated requirement) host binari Google resmi — TERBUKTI
+# identik di semua image GitHub macOS (hex 184B, subject.OU=EQHXZ8M8AV).
+# Dipakai bila perhitungan runtime (csreq_hex) gagal, supaya grant TCC tidak
+# jatuh ke INSERT tanpa csreq (yang diabaikan tccd -> input mati).
+CSREQ_FALLBACK="fade0c00000000b800000001000000060000000200000029636f6d2e676f6f676c652e6368726f6d6572656d6f74656465736b746f702e6d65326d652d686f7374000000000000060000000f000000060000000e000000010000000a2a864886f76364060206000000000000000000060000000e000000000000000a2a864886f7636406010d0000000000000000000b000000000000000a7375626a6563742e4f550000000000010000000a455148585a384d3841560000"
+
 log() { printf '[setup-crd-v2] %s\n' "$*"; }
 die() { log "FATAL: $*"; exit 1; }
 
@@ -215,22 +221,31 @@ grant_tcc() {
   [ -x "$HOST_BIN" ] || HOST_BIN="$(discover_host_bin)"
   [ -n "$HOST_BIN" ] || die "Tidak ada remoting_me2me_host untuk TCC."
 
-  APP_BUNDLE="${HOST_BIN%/*/Contents/MacOS/*}"
+  APP_BUNDLE="${HOST_BIN%/Contents/MacOS/*}"
   case "$APP_BUNDLE" in *.app) ;; *) APP_BUNDLE='' ;; esac
 
   csreq_h="$(csreq_hex "$HOST_BIN")" || csreq_h=""
-  log "csreq host: ${csreq_h:+OK ($(( ${#csreq_h} / 2 )) byte)}${csreq_h:-GAGAL dihitung}"
+  if [ -z "$csreq_h" ]; then
+    csreq_h="$CSREQ_FALLBACK"
+    log "csreq runtime GAGAL dihitung; pakai fallback TERBUKTI (184B)."
+  fi
+  log "csreq host: OK ($(( ${#csreq_h} / 2 )) byte)"
   csreq_h="$(tr -d '\n' <<<"${csreq_h:-}")"
 
   log "Menerapkan izin TCC utk host $BUNDLE_ID ..."
-  for svc in ScreenCapture Accessibility PostEvent ListenEvent AppleEvents; do
+  # PENTING: nama service harus KANONIKAL (prefix kTCCService*) — nama
+  # telanjang (ScreenCapture/Accessibility/...) DIIGNORALKAN oleh tccd
+  # (ditemukan lapangan di mesin dev; input mati total).
+  for svc in kTCCServiceScreenCapture kTCCServiceAccessibility kTCCServicePostEvent \
+             kTCCServiceListenEvent kTCCServiceAppleEvents kTCCServiceRemoteDesktop; do
     tcc_fix "$svc" "$BUNDLE_ID" 0 "$csreq_h"
   done
-  tcc_fix ScreenCapture "$HOST_BIN" 1 "$csreq_h"
-  tcc_fix Accessibility "$HOST_BIN" 1 "$csreq_h"
-  tcc_fix PostEvent      "$HOST_BIN" 1 "$csreq_h"
+  for svc in kTCCServiceScreenCapture kTCCServiceAccessibility kTCCServicePostEvent \
+             kTCCServiceListenEvent kTCCServiceAppleEvents kTCCServiceRemoteDesktop; do
+    tcc_fix "$svc" "$HOST_BIN" 1 "$csreq_h"
+  done
   if [ -n "$APP_BUNDLE" ]; then
-    for svc in ScreenCapture Accessibility PostEvent; do
+    for svc in kTCCServiceScreenCapture kTCCServiceAccessibility kTCCServicePostEvent; do
       tcc_fix "$svc" "$APP_BUNDLE" 1 "$csreq_h"
     done
   fi
@@ -238,6 +253,11 @@ grant_tcc() {
   log "Restart tccd agar izin baru terbaca..."
   sudo -n killall -9 tccd 2>/dev/null || log "(tccd belum jalan — normal)"
   sleep 3
+
+  log "=== Baris TCC host setelah grant (auth_value harus 2) ==="
+  sudo -n sqlite3 -readonly "$TCC_DB" \
+    "SELECT service, client_type, auth_value, length(csreq) AS csreq_b, last_modified AS ts FROM access WHERE client='$BUNDLE_ID' OR client='$HOST_BIN' OR client LIKE '%ChromeRemoteDesktopHost.app' ORDER BY service;" \
+    2>/dev/null || true
 }
 
 # Sesi GUI TERAKTIF di console (bukan sesi latar). Host di sesi non-console
@@ -343,7 +363,7 @@ enroll_host() {
   TMP="$(mktemp /tmp/crd.config.XXXXXX.json)"
   CONFIG_JSON="$(env CRD_NAME="$CRD_NAME" GOOGLE_USER="$GOOGLE_USER" \
                     GOOGLE_PASS="$GOOGLE_PASS" CRD_PIN="$CRD_PIN" \
-                    CRD_OTP="${CRD_OTP:-}" CRD_CLEANUP="${CRD_CLEANUP:-1}" \
+                    CRD_OTP="${CRD_OTP:-}" CRD_CLEANUP="${CRD_CLEANUP:-0}" \
                     CRD_SESSION_FILE="${CRD_SESSION_FILE:-}" \
                     python3 "$ENROLL" 2>/tmp/crd.enroll.err.log)"
   rc=$?
