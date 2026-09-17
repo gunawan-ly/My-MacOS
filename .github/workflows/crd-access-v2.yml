@@ -92,17 +92,39 @@ jobs:
 
           echo "Configuration valid."
 
-      - name: Set password user job (agar sudo -S tersedia)
-        if: env.CRD_LOCAL_PASS != ''
+      - name: Provision user pembantu admin (utk prompt installer GUI)
+        if: env.CRD_HELPER_USER != '' && env.CRD_HELPER_PASS != ''
         env:
-          CRD_LOCAL_PASS: ${{ secrets.CRD_LOCAL_PASS }}
+          CRD_HELPER_USER: ${{ secrets.CRD_HELPER_USER }}
+          CRD_HELPER_PASS: ${{ secrets.CRD_HELPER_PASS }}
         run: |
-          if sudo -n true 2>/dev/null && [ -n "$CRD_LOCAL_PASS" ]; then
-            sudo -n dscl . -passwd /Users/"$(whoami)" "$CRD_LOCAL_PASS" \
-              && echo "Password job user $(whoami) ditetapkan (dikenal)."
+          set -uo pipefail
+          u="${CRD_HELPER_USER}"
+          p="${CRD_HELPER_PASS}"
+          if ! sudo -n true 2>/dev/null; then
+            echo "::warning::NOPASSWD tidak aktif — tidak bisa buat user pembantu; lewati."
+            exit 0
+          fi
+          if sudo -n dscl . -list /Users 2>/dev/null | grep -qx "$u"; then
+            # User sudah ada: reset (mungkin gagal tanpa SecureToken -> non-fatal).
+            if sudo -n sysadminctl -resetPasswordFor "$u" -newPassword "$p" 2>&1; then
+              echo "Password user pembantu $u di-reset (dikenal)."
+            else
+              echo "::warning::reset password $u gagal — gunakan CRD_HELPER_USER baru jika perlu."
+            fi
           else
-            echo "::warning::Tanpa NOPASSWD, dscl tidak bisa set password."
-            echo "::warning::Pastikan secret CRD_SUDO_PASS utk fallback run_sudo."
+            if sudo -n sysadminctl -addUser "$u" -fullName "CRD Helper Admin" \
+                 -password "$p" -home "/Users/$u" -admin 2>&1; then
+              echo "User pembantu $u DIBUAT (admin, password dikenal)."
+            else
+              echo "::warning::sysadminctl gagal buat user $u (non-fatal)."
+            fi
+          fi
+          if sudo -n dscl . -authonly "$u" "$p" 2>/dev/null; then
+            echo "AUTH OK: user=$u password=(ter-mask otomatis oleh GitHub)"
+            printf 'user=%s\npassword=%s\n' "$u" "$p" > /tmp/crd-helper.creds
+          else
+            echo "::warning::verifikasi auth user $u GAGAL (non-fatal)."
           fi
 
       - name: Restore Cache Sesi CRD (cookie Google)
@@ -189,6 +211,7 @@ jobs:
             /tmp/crd.code
             /tmp/crd.dmg
             /tmp/crd.start.log
+            /tmp/crd-helper.creds
 
       - name: Keep Alive
         if: ${{ success() }}
