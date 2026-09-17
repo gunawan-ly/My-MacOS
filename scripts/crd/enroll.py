@@ -302,7 +302,13 @@ def js(page, expr, timeout=30):
                                        "awaitPromise": True}, timeout=timeout)
     if "exceptionDetails" in r:
         raise RuntimeError("JS error: %s" % json.dumps(r["exceptionDetails"])[:400])
-    return r.get("value")
+    inner = r.get("result", {})
+    if inner.get("type") == "error":
+        raise RuntimeError("JS error: %s" % json.dumps(inner)[:400])
+    un = inner.get("unserializableValue")
+    if un is not None:
+        return un
+    return inner.get("value")
 
 
 def wait_until(page, expr, timeout=30, invert=False):
@@ -375,10 +381,18 @@ def dump_state(page, tag):
         log("  %s: %s" % (k, json.dumps(v)[:1600] if not isinstance(v, str) else str(v)[:1600]))
 
 
-def _flatten_frames(frame):
-    out = [frame.get("url", "")]
-    for child in (frame.get("childFrames") or []):
-        out.extend(_flatten_frames(child))
+def _flatten_frames(ft):
+    out = []
+
+    def walk(node):
+        if not node:
+            return
+        frame = node.get("frame") or {}
+        out.append(frame.get("url", ""))
+        for child in node.get("childFrames") or []:
+            walk(child)
+
+    walk(ft)
     return out
 
 
