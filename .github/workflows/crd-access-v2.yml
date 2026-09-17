@@ -1,0 +1,76 @@
+name: macOS - Chrome Remote Desktop (V2)
+
+on:
+  workflow_dispatch:
+    inputs:
+      hostname:
+        description: 'Nama host yang tampil di aplikasi Chrome Remote Desktop (default: mac-<run_id>).'
+        required: false
+        default: ''
+      keep_alive_minutes:
+        description: 'Durasi keep-alive dalam menit (maks 355).'
+        required: false
+        default: '355'
+
+run-name: 'CRD V2 (${{ github.run_id }})'
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  crd:
+    name: Chrome Remote Desktop (V2 - verifikasi penuh)
+    runs-on: macos-latest
+    timeout-minutes: 360
+
+    env:
+      CRD_CODE: ${{ secrets.CRD_CODE }}
+      CRD_PIN: ${{ secrets.CRD_PIN }}
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Validate Configuration
+        run: |
+          set -u
+
+          if [ -z "${CRD_CODE:-}" ]; then
+            echo "::error::Secret CRD_CODE kosong. Ambil kode dari https://remotedesktop.google.com/headless lalu set secret CRD_CODE."
+            exit 1
+          fi
+          case "$CRD_CODE" in
+            4/*) ;;
+            *)
+              echo "::error::CRD_CODE harus dimulai dengan '4/'. Dapatkan kode baru dari https://remotedesktop.google.com/headless."
+              exit 1
+              ;;
+          esac
+
+          if [ -z "${CRD_PIN:-}" ]; then
+            echo "::error::Secret CRD_PIN belum dikonfigurasi."
+            exit 1
+          fi
+          if ! [[ "$CRD_PIN" =~ ^[0-9]{6,}$ ]]; then
+            echo "::error::CRD_PIN harus angka 6+ digit (contoh: 123456)."
+            exit 1
+          fi
+
+          echo "Configuration valid."
+
+      - name: Setup Chrome Remote Desktop (V2)
+        env:
+          CRD_NAME: ${{ inputs.hostname }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          KEEP_ALIVE_MINUTES: ${{ inputs.keep_alive_minutes }}
+        run: |
+          bash scripts/crd/setup_crd_v2.sh
+
+      - name: Keep Alive
+        env:
+          CRD_NAME: ${{ inputs.hostname }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          KEEP_ALIVE_MINUTES: ${{ inputs.keep_alive_minutes }}
+        run: |
+          bash scripts/keep_alive.sh

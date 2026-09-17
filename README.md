@@ -206,8 +206,25 @@ Runner sifatnya **ephemeral**:
 
 ## Alur workflow (CRD)
 
-`Checkout → Validate (CRD_CODE & CRD_PIN) → Setup CRD (install host, TCC, display awake,
-auth headless, verifikasi) → Keep Alive`.
+**V1 (`crd-access.yml`, legacy):** `Checkout → Validate (CRD_CODE & CRD_PIN) → Setup CRD
+(install host, TCC, display awake, auth headless, verifikasi) → Keep Alive`.
+
+**V2 (`crd-access-v2.yml`, disarankan):** versi hasil perbaikan lapangan. Bedanya dengan V1:
+
+1. **Install host dari DMG resmi** (`dl.google.com/chrome-remote-desktop`), bukan cask — karena
+   cask TIDAK menyertakan `remoting_start_host` (akar kegagalan V1).
+2. **Fix TCC layar yang benar** — V1 hanya INSERT baru; di lapangan layar tetap hitam karena baris
+   ScreenCapture yang sudah ada (milik bundle id `com.google.chromeremotedesktop.me2me-host`
+   berikut `csreq`) berstatus `auth_value=0` (DENIED). V2 melakukan **UPDATE `auth_value=2`
+   sambil mempertahankan `csreq`**; bila baris belum ada, INSERT lengkap dengan `csreq` yang
+   dihitung dari sertifikat binary (via Security framework).
+3. **Sesi GUI on-console** — host dimuat via LaunchAgent langsung ke sesi yang benar-benar di
+   console (di-parse dari `scutil show State:/Users/ConsoleUser` → `kCGSSessionOnConsoleKey`),
+   bukan sesi latar / field `Name` yang menyesatkan. Sesi non-console = layar hitam + input err.
+4. **Host dijalankan langsung** (`remoting_me2me_host -v --host-config=...`) dengan KeepAlive,
+   bukan lewat service wrapper `--run-from-launchd` yang menolak akses.
+5. **Verifikasi riil**: `Host ready to receive connections`, tangkapan layar (DISPLAY-CHECK),
+   probe pointer (INPUT-CHECK).
 
 ## Susunan file
 
@@ -215,16 +232,22 @@ auth headless, verifikasi) → Keep Alive`.
 |---|---|
 | `.github/workflows/ssh-access.yml` | Workflow SSH via Tailscale (validasi → join tailnet → Remote Login → keep-alive) |
 | `.github/workflows/vnc-access.yml` | Workflow VNC via Tailscale (validasi → Tailscale → Screen Sharing → keep-alive) |
-| `.github/workflows/crd-access.yml` | Workflow CRD (validasi → setup host → keep-alive) |
+| `.github/workflows/crd-access.yml` | Workflow CRD V1 (legacy; cask tidak punya `remoting_start_host`) |
+| `.github/workflows/crd-access-v2.yml` | Workflow CRD V2 (DMG resmi, TCC preserve-`csreq`, sesi on-console) |
 | `scripts/ssh/tailscale_ssh.sh` | Install CLI Tailscale, `tailscaled` root, `tailscale up`, aktifkan sshd, set password/key, cetak `SSH READY` |
 | `scripts/vnc/setup_vnc.sh` | kickstart Screen Sharing (legacy VNC), set password, TCC capture layar, launchd socket activation, cetak `VNC READY` |
-| `scripts/crd/setup_crd.sh` | Install host, TCC izin layar, wake display, auth `remoting_start_host`, verifikasi |
+| `scripts/crd/setup_crd.sh` | Setup CRD V1 (legacy) |
+| `scripts/crd/setup_crd_v2.sh` | Setup CRD V2 (DMG, TCC update-preserve-`csreq`, LaunchAgent sesi on-console, verifikasi) |
 | `scripts/keep_alive.sh` | Loop keep-alive sampai batas waktu (menampilkan `TSIP`/`CRD_NAME`/`VNC_HOST`) |
 
 ## Troubleshooting
 
-- **`remoting_start_host tidak ditemukan`** → status CRD saat ini; kemungkinan cask tidak menyertakan
-  binary tersebut (lihat Kendala di atas). Perlu inspeksi dari dalam runner via SSH.
+- **`remoting_start_host tidak ditemukan`** (V1) → gunakan **V2**; cask tidak menyertakan binary
+  tersebut, sementara DMG resmi memuatnya.
+- **Layar hitam di klien** meski host online → izin ScreenCapture TCC ter-DENIED di baris bundle id
+  + `csreq`. V2 menanganinya otomatis (UPDATE `auth_value=2`, `csreq` dipertahankan,
+  `killall tccd` setelahnya). Verifikasi manual:
+  `sudo sqlite3 "/Library/Application Support/com.apple.TCC/TCC.db" "SELECT service,client,auth_value FROM access WHERE client LIKE '%chromeremotedesktop%';"`
 - **"CRD_CODE tidak valid"** → kode kadaluarsa/terpakai; ambil kode baru di halaman headless,
   perbarui secret, jalankan ulang.
 - **Host tidak muncul di app CRD** → pastikan akun sama dengan yang membuat kode; tunggu ~15–60
