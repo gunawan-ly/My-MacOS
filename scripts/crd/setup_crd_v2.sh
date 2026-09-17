@@ -49,6 +49,35 @@ CSREQ_FALLBACK="fade0c00000000b800000001000000060000000200000029636f6d2e676f6f67
 log() { printf '[setup-crd-v2] %s\n' "$*"; }
 die() { log "FATAL: $*"; exit 1; }
 
+# Otentikasi sudo NON-INTERAKTIF: tidak akan pernah menampilkan dialog
+# SecurityAgent "masukkan password" (sumber nama console user muncul, misal
+# 'Anka'). Urutan: NOPASSWD -> password via CRD_SUDO_PASS/CRD_LOCAL_PASS ->
+# gagal cepat dgn pesan jelas.
+CRED_SUDO="${CRD_SUDO_PASS:-${CRD_LOCAL_PASS:-}}"
+run_sudo() {
+  if sudo -n true 2>/dev/null; then
+    sudo -n "$@"
+  elif [ -n "$CRED_SUDO" ]; then
+    printf '%s\n' "$CRED_SUDO" | sudo -S -p '' "$@"
+  else
+    log "FATAL: sudo butuh password (console=$(stat -f %Su /dev/console 2>/dev/null), job=$(whoami))."
+    log "Set secret CRD_SUDO_PASS (atau CRD_LOCAL_PASS) utk autentikasi non-interaktif."
+    return 1
+  fi
+}
+
+preflight_sudo() {
+  log "Preflight sudo: job user=%s, console=%s" "$(whoami)" \
+      "$(stat -f '%Su' /dev/console 2>/dev/null || echo '-')"
+  if sudo -n true 2>/dev/null; then
+    log "  mode otentikasi: NOPASSWD (senyap)."
+  elif [ -n "$CRED_SUDO" ]; then
+    log "  mode otentikasi: password via CRD_SUDO_PASS/CRD_LOCAL_PASS."
+  else
+    log "  mode otentikasi: TIDAK tersedia -> sudo akan gagal cepat TANPA prompt."
+  fi
+}
+
 # Jalankan command dengan batas waktu (detik). stdout+stderr digabung & dicetak.
 run_bounded() {
   local timeout_seconds=$1 rc out pid waited
@@ -103,8 +132,11 @@ install_host() {
   }
   while IFS= read -r p; do
     log "Install pkg: $p"
-    if ! run_bounded 300 "sudo installer -pkg '$p' -target /"; then
-      log "Peringatan: installer gagal utk '$p'."
+    if ! run_sudo installer -pkg "$p" -target /; then
+      log "FATAL: installer '$p' gagal (sudo tidak bisa otentikasi tanpa dialog)."
+      hdiutil detach "$mnt" >/dev/null 2>&1
+      rm -rf "$mnt"
+      exit 1
     fi
   done <<<"$pkgs"
   hdiutil detach "$mnt" >/dev/null 2>&1
@@ -484,6 +516,7 @@ main() {
   log " Chrome Remote Desktop V2 | name=$CRD_NAME"
   log "=============================================="
 
+  preflight_sudo
   install_host
   local HOST_BIN
   HOST_BIN="$(discover_host_bin)"
