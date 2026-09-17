@@ -95,14 +95,16 @@ install_host() {
   hdiutil attach -nobrowse -mountpoint "$mnt" /tmp/crd.dmg >/dev/null 2>&1 || {
     rm -rf "$mnt"; die "Gagal mount DMG CRD."
   }
-  pkgs="$(find "$mnt" -maxdepth 3 -name '*.pkg' 2>/dev/null)"
+  pkgs="$(find "$mnt" -maxdepth 2 -name '*.pkg' 2>/dev/null)"
   [ -n "$pkgs" ] || {
     hdiutil detach "$mnt" >/dev/null 2>&1; rm -rf "$mnt"; die "Tidak ada .pkg di dalam DMG CRD."
   }
-  for p in $pkgs; do
+  while IFS= read -r p; do
     log "Install pkg: $p"
-    run_bounded 300 "sudo installer -pkg '$p' -target /" >/dev/null || log "Peringatan: installer gagal utk $p."
-  done
+    if ! run_bounded 300 "sudo installer -pkg '$p' -target /"; then
+      log "Peringatan: installer gagal utk '$p'."
+    fi
+  done <<<"$pkgs"
   hdiutil detach "$mnt" >/dev/null 2>&1
   rm -rf "$mnt"
 
