@@ -66,6 +66,21 @@ def log(*a):
     print("[enroll]", *a, file=sys.stderr, flush=True)
 
 
+# Ringkasan debug untuk workflow log (ditulis ke file, ditampilkan setup_crd_v2.sh).
+_DEBUG_SUMMARY = []
+def dlog(msg):
+    _DEBUG_SUMMARY.append(msg)
+    log(msg)
+
+
+def write_debug_summary():
+    try:
+        with open("/tmp/crd.enroll.summary", "w") as f:
+            f.write("\n".join(_DEBUG_SUMMARY) + "\n")
+    except Exception:
+        pass
+
+
 def die(msg):
     log("FATAL:", msg)
     sys.exit(1)
@@ -1495,7 +1510,7 @@ def main():
 
     # --- Jalur kode manual: lewati login browser sepenuhnya ---
     if manual_code:
-        log("CRD_AUTH_CODE terisi: melewati login browser otomatis.")
+        dlog("JALUR: kode manual (CRD_AUTH_CODE terisi), login browser dilewati.")
         nm = None
         try:
             nm = NativeMessaging(nm_path)
@@ -1506,7 +1521,7 @@ def main():
                 die("generateKeyPair gagal: %s" % json.dumps(keys)[:300])
 
             new_host_id = host_id
-            log("Host ID (lokal): %s" % new_host_id)
+            dlog("Host ID (lokal): %s" % new_host_id)
 
             pin_hash = nm.call({"type": "getPinHash", "hostId": new_host_id, "pin": pin}, timeout=60)
             if "hash" not in pin_hash:
@@ -1517,31 +1532,32 @@ def main():
             if "refreshToken" not in creds:
                 die("getCredentialsFromAuthCode gagal (kode manual mungkin kedaluwarsa/salah): %s"
                     % json.dumps(creds)[:400])
+            dlog("getCredentialsFromAuthCode OK: refresh token didapat.")
 
             refresh_token = creds["refreshToken"]
             # EKSPERIMENTAL: coba daftarkan host via OAuth (tanpa cookie browser).
             # Kalau berhasil, host_id jadi resmi terdaftar di Google.
             # PENTING: pakai refresh token BARU dari hasil exchange (rotating).
             try:
-                log("Mencoba registrasi host via OAuth (eksperimental)...")
+                dlog("Mencoba registrasi host via OAuth (eksperimental)...")
                 access_token, new_rt = oauth_refresh_to_access(refresh_token)
                 if new_rt:
                     refresh_token = new_rt
                 if access_token:
-                    log("Access token didapat, memanggil RegisterHost...")
+                    dlog("Access token didapat, memanggil RegisterHost...")
                     reg = register_host_oauth(access_token, host_id, pub, name)
                     if reg:
                         host_info, _ = reg
                         if isinstance(host_info, list) and host_info:
                             new_host_id = host_info[0]
-                        log("RegisterHost via OAuth OK -> hostId=%s" % new_host_id)
+                        dlog("RegisterHost via OAuth OK -> hostId=%s" % new_host_id)
                     else:
-                        log("RegisterHost via OAuth gagal, lanjut dengan host_id lokal (mungkin tidak muncul di aplikasi).")
+                        dlog("RegisterHost via OAuth GAGAL, lanjut host_id lokal.")
                 else:
-                    log("Gagal dapat access token, lanjut dengan host_id lokal.")
+                    dlog("Gagal dapat access token, lanjut host_id lokal.")
             except Exception as e:
-                log("Registrasi OAuth error (non-fatal): %s" % e)
-            log("Host ID final: %s" % new_host_id)
+                dlog("Registrasi OAuth error (non-fatal): %s" % e)
+            dlog("Host ID final: %s" % new_host_id)
 
             service_account = (creds.get("userEmail")
                                or new_host_id.replace("-", "") + "@chromoting.gserviceaccount.com")
@@ -1560,6 +1576,8 @@ def main():
                 json.dump(config, f)
             print(json.dumps(config, indent=2), flush=True)
             log("SUKSES (kode manual): config ditulis ke %s (host %s)" % (SECRETS_OUT, new_host_id))
+            dlog("SUKSES: config ditulis.")
+            write_debug_summary()
         finally:
             try:
                 if nm:

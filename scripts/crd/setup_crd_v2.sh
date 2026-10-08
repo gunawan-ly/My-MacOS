@@ -399,6 +399,12 @@ enroll_host() {
                     CRD_AUTH_CODE="${CRD_AUTH_CODE:-}" \
                     python3 "$ENROLL" 2>/tmp/crd.enroll.err.log)"
   rc=$?
+  # Tampilkan ringkasan debug dari enroll.py (jalur kode manual) ke workflow log.
+  if [ -f /tmp/crd.enroll.summary ]; then
+    echo "--- Ringkasan enroll.py ---"
+    cat /tmp/crd.enroll.summary
+    echo "--- Akhir ringkasan ---"
+  fi
   if [ "$rc" -ne 0 ]; then
     cat /tmp/crd.enroll.err.log 2>/dev/null || true
     die "Enrollment gagal. Penyebab umum: 2FA/CAPTCHA, password salah, Chrome belum terpasang."
