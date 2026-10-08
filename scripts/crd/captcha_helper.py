@@ -81,27 +81,28 @@ def _try_upload_image(issue_number, png_path):
     return ""
 
 
-def request_captcha_answer(screenshot_path, timeout_minutes=10):
+def create_status_issue(screenshot_path, note):
     """
-    Buat issue CAPTCHA, tunggu jawaban Awan di komentar.
-    Return: teks jawaban, atau None bila timeout/gagal.
+    Buat issue status berisi screenshot halaman saat ini.
+    Dipakai agar Awan langsung bisa melihat keadaan tanpa menunggu timeout.
+    Return: nomor issue, atau None bila gagal.
     """
     run_id = os.environ.get("GITHUB_RUN_ID", "?")
     repo = os.environ.get("GITHUB_REPOSITORY", "")
     run_url = "https://github.com/%s/actions/runs/%s" % (repo, run_id)
 
-    # 1. Buat issue
-    title = "CAPTCHA dibutuhkan - run %s" % run_id
+    title = "Status login - run %s" % run_id
     body = (
-        "Halo Awan! Google menampilkan CAPTCHA saat login di runner.\n\n"
-        "**Cara bantu:**\n"
-        "1. Lihat gambar CAPTCHA di bawah (atau buka artifact `crd-debug-%s` di [run ini](%s))\n"
-        "2. Ketik teks yang terlihat di gambar sebagai **komentar** di issue ini\n"
+        "Halo Awan! Ini screenshot keadaan halaman login di runner.\n\n"
+        "**Status:** %s\n\n"
+        "**Cara bantu (bila ada CAPTCHA di gambar):**\n"
+        "1. Lihat gambar di bawah (atau buka artifact `crd-debug-%s` di [run ini](%s))\n"
+        "2. Bila ada teks CAPTCHA terlihat, ketik sebagai **komentar** di issue ini\n"
         "3. Workflow akan otomatis lanjut setelah membaca komentarmu\n\n"
-        "_Timeout: %d menit. Tulis hanya teks CAPTCHA-nya saja._"
-        % (run_id, run_url, timeout_minutes)
+        "_Issue ini ditutup otomatis oleh workflow._"
+        % (note, run_id, run_url)
     )
-    log("membuat issue CAPTCHA...")
+    log("membuat issue status...")
     try:
         issue = _gh_api("POST", "/issues", {"title": title, "body": body})
     except Exception as e:
@@ -111,21 +112,29 @@ def request_captcha_answer(screenshot_path, timeout_minutes=10):
     issue_number = issue.get("number")
     log("issue #%s dibuat" % issue_number)
 
-    # 2. Coba upload screenshot ke issue, update body bila berhasil
+    # Coba upload screenshot ke issue, update body bila berhasil
     img_md = _try_upload_image(issue_number, screenshot_path)
     if img_md:
         try:
             new_body = body.replace(
-                "Lihat gambar CAPTCHA di bawah",
-                "Lihat gambar CAPTCHA di bawah:\n\n%s\n" % img_md)
+                "Lihat gambar di bawah",
+                "Lihat gambar di bawah:\n\n%s\n" % img_md)
             _gh_api("PATCH", "/issues/%s" % issue_number, {"body": new_body})
         except Exception as e:
             log("gagal update body issue: %s" % e)
 
-    # 3. Polling komentar
+    return issue_number
+
+
+def wait_for_issue_answer(issue_number, timeout_minutes=10):
+    """
+    Tunggu jawaban Awan di komentar issue yang sudah ada.
+    Return: teks jawaban, atau None bila timeout/gagal.
+    """
+    if not issue_number:
+        return None
     deadline = time.time() + timeout_minutes * 60
     seen_ids = set()
-    # Tandai komentar yang sudah ada sebelum polling agar tidak terbaca
     try:
         existing = _gh_api("GET", "/issues/%s/comments?per_page=100" % issue_number)
         seen_ids = {c.get("id") for c in existing}
@@ -147,10 +156,8 @@ def request_captcha_answer(screenshot_path, timeout_minutes=10):
             seen_ids.add(cid)
             author = (c.get("user") or {}).get("login", "")
             text = (c.get("body") or "").strip()
-            # Abaikan komentar bot
             if "[bot]" in author or not text:
                 continue
-            # Ambil baris pertama non-kosong sebagai jawaban
             for line in text.splitlines():
                 line = line.strip()
                 if line and not line.startswith(">") and not line.startswith("#"):
@@ -159,22 +166,39 @@ def request_captcha_answer(screenshot_path, timeout_minutes=10):
             else:
                 continue
             log("jawaban diterima dari @%s" % author)
-            # Tutup issue otomatis
-            try:
-                _gh_api("PATCH", "/issues/%s" % issue_number, {"state": "closed"})
-                _gh_api("POST", "/issues/%s/comments" % issue_number,
-                        {"body": "Jawaban diterima, workflow lanjut. Terima kasih!"})
-            except Exception:
-                pass
             return answer
-    log("timeout menunggu jawaban CAPTCHA")
-    try:
-        _gh_api("POST", "/issues/%s/comments" % issue_number,
-                {"body": "Timeout %d menit, workflow dibatalkan." % timeout_minutes})
-        _gh_api("PATCH", "/issues/%s" % issue_number, {"state": "closed"})
-    except Exception:
-        pass
+    log("timeout menunggu jawaban")
     return None
+
+
+def close_issue(issue_number, message):
+    """Tutup issue dengan pesan penutup."""
+    if not issue_number:
+        return
+    try:
+        _gh_api("POST", "/issues/%s/comments" % issue_number, {"body": message})
+        _gh_api("PATCH", "/issues/%s" % issue_number, {"state": "closed"})
+        log("issue #%s ditutup" % issue_number)
+    except Exception as e:
+        log("gagal tutup issue: %s" % e)
+
+
+def request_captcha_answer(screenshot_path, timeout_minutes=10):
+    """
+    Kompatibilitas: buat issue lalu tunggu jawaban (gabungan dua fungsi).
+    Return: teks jawaban, atau None bila timeout/gagal.
+    """
+    issue_number = create_status_issue(
+        screenshot_path,
+        "Google menampilkan CAPTCHA saat login di runner.")
+    if not issue_number:
+        return None
+    answer = wait_for_issue_answer(issue_number, timeout_minutes)
+    if answer:
+        close_issue(issue_number, "Jawaban diterima, workflow lanjut. Terima kasih!")
+    else:
+        close_issue(issue_number, "Timeout %d menit, workflow dibatalkan." % timeout_minutes)
+    return answer
 
 
 def is_captcha_page(js_fn):

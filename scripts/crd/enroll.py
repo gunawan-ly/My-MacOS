@@ -812,25 +812,38 @@ def login_google(page, user, password):
         "}return false;})()" % json.dumps(password_selector)
     )
 
+    # Tunggu singkat dulu (15 dtk); bila password tak kunjung muncul,
+    # langsung kirim screenshot via issue agar Awan bisa lihat keadaan.
     if not wait_until(
         page,
         visible_password_js,
-        60
+        15
     ):
         dump_state(page, "login-password")
         screenshot_path = screenshot(page, "login-password")
 
-        # Opsi: CAPTCHA muncul — minta Awan memecahkan via GitHub issue.
+        # Langsung buat issue visibilitas (tak peduli CAPTCHA atau bukan),
+        # agar Awan tahu keadaan halaman tanpa menunggu timeout panjang.
         # Hanya aktif bila GITHUB_TOKEN tersedia (di dalam Actions).
+        issue_number = None
+        try:
+            import captcha_helper
+            issue_number = captcha_helper.create_status_issue(
+                screenshot_path or "/tmp/crd-login-password.png",
+                "Halaman login setelah email dikirim — kolom password belum muncul.")
+        except Exception as e:
+            log("gagal buat issue status: %s" % e)
+
+        # Cek apakah ini CAPTCHA; bila ya, minta jawaban Awan di issue yang sama.
         captcha_answer = None
         try:
             import captcha_helper
             is_captcha = captcha_helper.is_captcha_page(
                 lambda expr, timeout=10: js(page, expr, timeout=timeout))
             if is_captcha:
-                log("CAPTCHA terdeteksi; meminta bantuan Awan via issue...")
-                captcha_answer = captcha_helper.request_captcha_answer(
-                    screenshot_path or "/tmp/crd-login-password.png")
+                log("CAPTCHA terdeteksi; meminta jawaban Awan...")
+                captcha_answer = captcha_helper.wait_for_issue_answer(
+                    issue_number, timeout_minutes=10)
         except Exception as e:
             log("captcha helper gagal: %s" % e)
 
@@ -847,13 +860,33 @@ def login_google(page, user, password):
                     screenshot(page, "login-password-after-captcha")
                     die("Password tetap tidak muncul setelah CAPTCHA diisi.")
                 log("kolom password muncul setelah CAPTCHA.")
+                try:
+                    import captcha_helper
+                    captcha_helper.close_issue(
+                        issue_number, "CAPTCHA terpecahkan, login lanjut.")
+                except Exception:
+                    pass
             else:
                 die("Gagal mengisi jawaban CAPTCHA ke form.")
         else:
-            die(
-                "Input password tidak muncul setelah email. "
-                "Lihat DEBUG + screenshot."
-            )
+            # Beri waktu tambahan 45 dtk; bila tetap tak muncul, gagal.
+            if not wait_until(page, visible_password_js, 45):
+                try:
+                    import captcha_helper
+                    captcha_helper.close_issue(
+                        issue_number, "Timeout: kolom password tak muncul.")
+                except Exception:
+                    pass
+                die(
+                    "Input password tidak muncul setelah email. "
+                    "Lihat DEBUG + screenshot."
+                )
+            try:
+                import captcha_helper
+                captcha_helper.close_issue(
+                    issue_number, "Kolom password muncul, login lanjut normal.")
+            except Exception:
+                pass
 
     # Tunggu form Google selesai hydrate (avoid race: isi saat masih
     # "Loading" bisa di-reset oleh React setelah mount).
