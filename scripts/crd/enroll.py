@@ -1144,6 +1144,60 @@ def grab_session(page):
 # ---------------------------------------------------------------------------
 # RegisterHost via batchexecute
 # ---------------------------------------------------------------------------
+def register_host_oauth(access_token, host_id, public_key, host_name):
+    """Eksperimental: registrasi host via batchexecute pakai OAuth Bearer token
+    (bukan cookie browser). Dicoba saat jalur kode manual dipakai."""
+    inner = json.dumps([host_id, public_key, host_name, CLIENT_ID])
+    f_req = json.dumps([[["RMf1af", inner, None, "generic"]]])
+    body = urllib.parse.urlencode({"f.req": f_req})
+    conn = http.client.HTTPSConnection("remotedesktop.google.com", timeout=60)
+    conn.request("POST", "/_/RemotingUi/data/batchexecute", body=body, headers={
+        "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+        "Authorization": "Bearer " + access_token,
+        "Referer": "https://remotedesktop.google.com/access",
+    })
+    resp = conn.getresponse()
+    raw = resp.read().decode("utf-8", "replace")
+    conn.close()
+    if resp.status != 200:
+        log("register_host_oauth HTTP %d: %s" % (resp.status, raw[:300]))
+        return None
+    text = raw.lstrip().replace(")]}'", "", 1).lstrip()
+    try:
+        found = _extract_register((json.loads(text) if text.startswith("[") else None))
+        if found:
+            return found
+    except Exception as e:
+        log("register_host_oauth parse gagal: %s" % e)
+    return None
+
+
+def oauth_refresh_to_access(refresh_token):
+    """Eksperimental: tukar refresh token jadi access token via endpoint OAuth
+    Google. Coba tanpa client_secret dulu (asumsi public client)."""
+    body = urllib.parse.urlencode({
+        "grant_type": "refresh_token",
+        "refresh_token": refresh_token,
+        "client_id": CLIENT_ID,
+    })
+    conn = http.client.HTTPSConnection("oauth2.googleapis.com", timeout=30)
+    conn.request("POST", "/token", body=body, headers={
+        "Content-Type": "application/x-www-form-urlencoded",
+    })
+    resp = conn.getresponse()
+    raw = resp.read().decode("utf-8", "replace")
+    conn.close()
+    if resp.status != 200:
+        log("oauth token exchange HTTP %d: %s" % (resp.status, raw[:300]))
+        return None
+    try:
+        data = json.loads(raw)
+        return data.get("access_token")
+    except Exception as e:
+        log("oauth token parse gagal: %s" % e)
+        return None
+
+
 def register_host(jar, at, host_id, public_key, host_name):
     inner = json.dumps([host_id, public_key, host_name, CLIENT_ID])
     f_req = json.dumps([[["RMf1af", inner, None, "generic"]]])
@@ -1458,6 +1512,28 @@ def main():
                 die("getCredentialsFromAuthCode gagal (kode manual mungkin kedaluwarsa/salah): %s"
                     % json.dumps(creds)[:400])
 
+            refresh_token = creds["refreshToken"]
+            # EKSPERIMENTAL: coba daftarkan host via OAuth (tanpa cookie browser).
+            # Kalau berhasil, host_id jadi resmi terdaftar di Google.
+            try:
+                log("Mencoba registrasi host via OAuth (eksperimental)...")
+                access_token = oauth_refresh_to_access(refresh_token)
+                if access_token:
+                    log("Access token didapat, memanggil RegisterHost...")
+                    reg = register_host_oauth(access_token, host_id, pub, name)
+                    if reg:
+                        host_info, _ = reg
+                        if isinstance(host_info, list) and host_info:
+                            new_host_id = host_info[0]
+                        log("RegisterHost via OAuth OK -> hostId=%s" % new_host_id)
+                    else:
+                        log("RegisterHost via OAuth gagal, lanjut dengan host_id lokal (mungkin tidak muncul di aplikasi).")
+                else:
+                    log("Gagal dapat access token, lanjut dengan host_id lokal.")
+            except Exception as e:
+                log("Registrasi OAuth error (non-fatal): %s" % e)
+            log("Host ID final: %s" % new_host_id)
+
             service_account = (creds.get("userEmail")
                                or new_host_id.replace("-", "") + "@chromoting.gserviceaccount.com")
             config = {
@@ -1468,7 +1544,7 @@ def main():
                 "private_key": priv,
                 "service_account": service_account,
                 "xmpp_login": service_account,
-                "oauth_refresh_token": creds["refreshToken"],
+                "oauth_refresh_token": refresh_token,
                 "usage_stats_consent": True,
             }
             with open(SECRETS_OUT, "w") as f:
