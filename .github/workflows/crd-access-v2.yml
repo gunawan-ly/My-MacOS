@@ -90,8 +90,12 @@ jobs:
           CRD_LOCAL_PASS: ${{ secrets.CRD_LOCAL_PASS }}
         run: |
           if sudo -n true 2>/dev/null && [ -n "$CRD_LOCAL_PASS" ]; then
-            sudo -n dscl . -passwd /Users/"$(whoami)" "$CRD_LOCAL_PASS" \
-              && echo "Password job user $(whoami) ditetapkan (dikenal)."
+            if sudo -n dscl . -passwd /Users/"$(whoami)" "$CRD_LOCAL_PASS" 2>/dev/null; then
+              echo "Password job user $(whoami) ditetapkan (dikenal)."
+            else
+              echo "::warning::dscl gagal set password (abaikan bila sudo NOPASSWD sudah aktif)."
+              echo "::warning::Pastikan secret CRD_SUDO_PASS utk fallback run_sudo."
+            fi
           else
             echo "::warning::Tanpa NOPASSWD, dscl tidak bisa set password."
             echo "::warning::Pastikan secret CRD_SUDO_PASS utk fallback run_sudo."
