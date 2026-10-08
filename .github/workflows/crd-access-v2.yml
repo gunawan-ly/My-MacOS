@@ -15,6 +15,10 @@ on:
         description: 'Security code OTP dari HP (Settings > Google > Manage Google Account > Security & sign-in > Security code). Diperlukan saat job memakai perangkat/login baru; jika kosong memakai secret CRD_OTP.'
         required: false
         default: ''
+      auth_code:
+        description: 'Kode otorisasi manual dari https://remotedesktop.google.com/headless (opsional). Isi ini untuk MELEWATI login browser otomatis saat Google menampilkan CAPTCHA ke runner. Ambil kode sesaat sebelum trigger workflow karena hanya berlaku beberapa menit.'
+        required: false
+        default: ''
 
 run-name: 'CRD V2 (${{ github.run_id }})'
 
@@ -120,6 +124,7 @@ jobs:
           GITHUB_RUN_ID: ${{ github.run_id }}
           KEEP_ALIVE_MINUTES: ${{ inputs.keep_alive_minutes }}
           CRD_OTP: ${{ inputs.otp || secrets.CRD_OTP }}
+          CRD_AUTH_CODE: ${{ inputs.auth_code }}
           CRD_SESSION_FILE: /tmp/crd-session-cookies.json
           CRD_CLEANUP: "0"
         run: |

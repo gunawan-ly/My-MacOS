@@ -22,6 +22,11 @@ berhenti dgn pesan jelas + screenshot debug di /tmp/crd-*.png.
 Env: GOOGLE_USER, GOOGLE_PASS, CRD_PIN, CRD_OTP (opsional), CRD_SESSION_FILE
      (opsional, cache cookie utk skip OTP di job berikutnya), CRD_CLEANUP
      (opsional), CRD_NAME (opsional), GITHUB_RUN_ID.
+     CRD_AUTH_CODE (opsional): kode otorisasi manual dari
+     https://remotedesktop.google.com/headless (cara resmi Google untuk
+     headless setup). Jika diisi, login browser otomatis DILEWATI sepenuhnya
+     (berguna saat Google menampilkan CAPTCHA ke runner). Kode hanya berlaku
+     beberapa menit, jadi ambil kode sesaat sebelum trigger workflow.
 Output stdout: JSON config host.
 """
 
@@ -1405,10 +1410,12 @@ def main():
     password = os.environ.get("GOOGLE_PASS", "")
     pin = os.environ.get("CRD_PIN", "")
     name = os.environ.get("CRD_NAME", "mac-%s" % os.environ.get("GITHUB_RUN_ID", "runner")).strip()
+    manual_code = os.environ.get("CRD_AUTH_CODE", "").strip()
     if "@" not in user:
         die("GOOGLE_USER harus berupa email.")
-    if not password:
-        die("GOOGLE_PASS kosong.")
+    # Jika pakai kode manual, password tidak wajib (login browser dilewati).
+    if not password and not manual_code:
+        die("GOOGLE_PASS kosong dan CRD_AUTH_CODE tidak diisi.")
     if not re.fullmatch(r"\d{6,}", pin):
         die("CRD_PIN harus 6+ digit.")
     if not name:
@@ -1425,6 +1432,56 @@ def main():
         die("native_messaging_host tidak ditemukan di /Library/PrivilegedHelperTools.")
     log("Chrome: %s" % chrome)
     log("NM: %s" % nm_path)
+
+    # --- Jalur kode manual: lewati login browser sepenuhnya ---
+    if manual_code:
+        log("CRD_AUTH_CODE terisi: melewati login browser otomatis.")
+        nm = None
+        try:
+            nm = NativeMessaging(nm_path)
+            keys = nm.call({"type": "generateKeyPair"}, timeout=60)
+            priv = keys.get("privateKey")
+            pub = keys.get("publicKey")
+            if not priv or not pub:
+                die("generateKeyPair gagal: %s" % json.dumps(keys)[:300])
+
+            new_host_id = host_id
+            log("Host ID (lokal): %s" % new_host_id)
+
+            pin_hash = nm.call({"type": "getPinHash", "hostId": new_host_id, "pin": pin}, timeout=60)
+            if "hash" not in pin_hash:
+                die("getPinHash gagal: %s" % json.dumps(pin_hash)[:300])
+
+            creds = nm.call({"type": "getCredentialsFromAuthCode",
+                             "authorizationCode": manual_code}, timeout=120)
+            if "refreshToken" not in creds:
+                die("getCredentialsFromAuthCode gagal (kode manual mungkin kedaluwarsa/salah): %s"
+                    % json.dumps(creds)[:400])
+
+            service_account = (creds.get("userEmail")
+                               or new_host_id.replace("-", "") + "@chromoting.gserviceaccount.com")
+            config = {
+                "host_id": new_host_id,
+                "host_name": name,
+                "host_owner": user.lower(),
+                "host_secret_hash": pin_hash["hash"],
+                "private_key": priv,
+                "service_account": service_account,
+                "xmpp_login": service_account,
+                "oauth_refresh_token": creds["refreshToken"],
+                "usage_stats_consent": True,
+            }
+            with open(SECRETS_OUT, "w") as f:
+                json.dump(config, f)
+            print(json.dumps(config, indent=2), flush=True)
+            log("SUKSES (kode manual): config ditulis ke %s (host %s)" % (SECRETS_OUT, new_host_id))
+        finally:
+            try:
+                if nm:
+                    nm.close()
+            except Exception:
+                pass
+        return
 
     proc = launch_chrome(chrome)
     page = None
