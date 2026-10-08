@@ -11,4 +11,9 @@ STEPS=$((MAX_SECONDS / INTERVAL))
 
 echo "Keep-alive: runner dipertahankan aktif selama ~${KEEP_ALIVE_MINUTES} menit."
 
+for ((i=1; i<=STEPS; i++)); do
+  echo "[keep-alive $i/$STEPS] $(date -u +%H:%M:%S) - $CRD_NAME masih aktif"
+  sleep $INTERVAL
+done
+
 echo "Keep-alive selesai. Runner akan menunggu timeout GitHub (maks 6 jam)."
