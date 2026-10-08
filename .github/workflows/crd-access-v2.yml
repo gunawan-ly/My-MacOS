@@ -12,8 +12,8 @@ on:
         required: false
         default: '355'
       auth_code:
-        description: 'Kode otorisasi dari https://remotedesktop.google.com/headless (WAJIB). Ambil kode sesaat sebelum trigger workflow karena hanya berlaku beberapa menit.'
-        required: true
+        description: 'Kode otorisasi dari https://remotedesktop.google.com/headless (opsional bila diisi belakangan). Jika kosong, runner akan menunggu kode via repo variable CRD_AUTH_CODE_PENDING (maks 10 menit). Isi variable sesaat setelah runner siap agar kode tidak kedaluwarsa.'
+        required: false
         default: ''
 
 run-name: 'CRD V2 (${{ github.run_id }})'

@@ -385,6 +385,60 @@ bounce_host() {
 # enroll.py mencetak JSON config ke stdout; hasil diletakkan ke CONFIG_FILE
 # dengan mode 644 (host jalan sebagai user biasa).
 # ---------------------------------------------------------------------------
+# Menunggu kode otorisasi manual via GitHub repo variable.
+# Dipakai bila CRD_AUTH_CODE tidak diisi saat trigger: runner sudah siap,
+# lalu polling variable CRD_AUTH_CODE_PENDING sampai Awan/Lyra mengisinya.
+# Memecahkan masalah kode kedaluwarsa (runner butuh 5+ menit untuk siap).
+wait_for_auth_code() {
+  local repo="${GITHUB_REPOSITORY:-gunawan-ly/My-MacOS}"
+  local token="${GITHUB_TOKEN:-}"
+  local var_name="CRD_AUTH_CODE_PENDING"
+  local timeout_secs=600  # 10 menit
+  local interval=15
+  local elapsed=0
+
+  # Kalau sudah diisi via input workflow, langsung pakai.
+  if [ -n "${CRD_AUTH_CODE:-}" ]; then
+    log "CRD_AUTH_CODE sudah diisi via input workflow."
+    return 0
+  fi
+
+  if [ -z "$token" ]; then
+    die "GITHUB_TOKEN kosong, tidak bisa polling kode."
+  fi
+
+  log "Menunggu kode otorisasi di repo variable '$var_name'..."
+  log "Cara isi: gh variable set $var_name --repo $repo --body 'KODE_ANDA'"
+  log "Atau via GitHub UI: Settings > Secrets and variables > Actions > Variables."
+  log "Timeout: $timeout_secs detik."
+
+  while [ "$elapsed" -lt "$timeout_secs" ]; do
+    local code
+    code="$(curl -sS -H "Authorization: Bearer $token" \
+      -H "Accept: application/vnd.github+json" \
+      "https://api.github.com/repos/$repo/actions/variables/$var_name" 2>/dev/null \
+      | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('value',''))" 2>/dev/null)"
+    if [ -n "$code" ]; then
+      log "Kode diterima (panjang ${#code} karakter)."
+      CRD_AUTH_CODE="$code"
+      export CRD_AUTH_CODE
+      # Hapus variable agar tidak dipakai ulang.
+      curl -sS -X PATCH -H "Authorization: Bearer $token" \
+        -H "Accept: application/vnd.github+json" \
+        -H "Content-Type: application/json" \
+        -d '{"value":""}' \
+        "https://api.github.com/repos/$repo/actions/variables/$var_name" >/dev/null 2>&1 || true
+      log "Variable '$var_name' dikosongkan."
+      return 0
+    fi
+    sleep "$interval"
+    elapsed=$((elapsed + interval))
+    log "Masih menunggu kode... (${elapsed}s/${timeout_secs}s)"
+  done
+
+  die "Timeout menunggu kode otorisasi setelah ${timeout_secs} detik."
+}
+
 enroll_host() {
   local ENROLL TMP CONFIG_JSON rc
   ENROLL="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/enroll.py"
@@ -529,6 +583,10 @@ main() {
   install_host
   local HOST_BIN
   HOST_BIN="$(discover_host_bin)"
+
+  # Tunggu kode otorisasi (via input atau polling variable).
+  # Dilakukan SETELAH install agar kode tidak kedaluwarsa saat runner siap.
+  wait_for_auth_code
 
   enroll_host
 
