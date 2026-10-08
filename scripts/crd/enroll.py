@@ -619,8 +619,10 @@ def screenshot(page, tag):
         with open(path, "wb") as f:
             f.write(base64.b64decode(r["data"]))
         log("screenshot debug -> %s" % path)
+        return path
     except Exception as e:
         log("! screenshot gagal: %s" % e)
+    return None
 
 
 def dump_state(page, tag):
@@ -816,11 +818,42 @@ def login_google(page, user, password):
         60
     ):
         dump_state(page, "login-password")
-        screenshot(page, "login-password")
-        die(
-            "Input password tidak muncul setelah email. "
-            "Lihat DEBUG + screenshot."
-        )
+        screenshot_path = screenshot(page, "login-password")
+
+        # Opsi: CAPTCHA muncul — minta Awan memecahkan via GitHub issue.
+        # Hanya aktif bila GITHUB_TOKEN tersedia (di dalam Actions).
+        captcha_answer = None
+        try:
+            import captcha_helper
+            is_captcha = captcha_helper.is_captcha_page(
+                lambda expr, timeout=10: js(page, expr, timeout=timeout))
+            if is_captcha:
+                log("CAPTCHA terdeteksi; meminta bantuan Awan via issue...")
+                captcha_answer = captcha_helper.request_captcha_answer(
+                    screenshot_path or "/tmp/crd-login-password.png")
+        except Exception as e:
+            log("captcha helper gagal: %s" % e)
+
+        if captcha_answer:
+            sel = captcha_helper.get_captcha_input_selector(
+                lambda expr, timeout=10: js(page, expr, timeout=timeout))
+            if sel and type_into(page, sel, captcha_answer):
+                log("jawaban CAPTCHA diisi; submit...")
+                if not click_login_button(page):
+                    press_enter(page)
+                # Tunggu lagi kolom password setelah CAPTCHA terpecahkan
+                if not wait_until(page, visible_password_js, 90):
+                    dump_state(page, "login-password-after-captcha")
+                    screenshot(page, "login-password-after-captcha")
+                    die("Password tetap tidak muncul setelah CAPTCHA diisi.")
+                log("kolom password muncul setelah CAPTCHA.")
+            else:
+                die("Gagal mengisi jawaban CAPTCHA ke form.")
+        else:
+            die(
+                "Input password tidak muncul setelah email. "
+                "Lihat DEBUG + screenshot."
+            )
 
     # Tunggu form Google selesai hydrate (avoid race: isi saat masih
     # "Loading" bisa di-reset oleh React setelah mount).
