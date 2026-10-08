@@ -22,11 +22,6 @@ berhenti dgn pesan jelas + screenshot debug di /tmp/crd-*.png.
 Env: GOOGLE_USER, GOOGLE_PASS, CRD_PIN, CRD_OTP (opsional), CRD_SESSION_FILE
      (opsional, cache cookie utk skip OTP di job berikutnya), CRD_CLEANUP
      (opsional), CRD_NAME (opsional), GITHUB_RUN_ID.
-     CRD_AUTH_CODE (opsional): kode otorisasi manual dari
-     https://remotedesktop.google.com/headless (cara resmi Google untuk
-     headless setup). Jika diisi, login browser otomatis DILEWATI sepenuhnya
-     (berguna saat Google menampilkan CAPTCHA ke runner). Kode hanya berlaku
-     beberapa menit, jadi ambil kode sesaat sebelum trigger workflow.
 Output stdout: JSON config host.
 """
 
@@ -64,21 +59,6 @@ NM_CANDIDATES = [
 
 def log(*a):
     print("[enroll]", *a, file=sys.stderr, flush=True)
-
-
-# Ringkasan debug untuk workflow log (ditulis ke file, ditampilkan setup_crd_v2.sh).
-_DEBUG_SUMMARY = []
-def dlog(msg):
-    _DEBUG_SUMMARY.append(msg)
-    log(msg)
-
-
-def write_debug_summary():
-    try:
-        with open("/tmp/crd.enroll.summary", "w") as f:
-            f.write("\n".join(_DEBUG_SUMMARY) + "\n")
-    except Exception:
-        pass
 
 
 def die(msg):
@@ -1159,66 +1139,6 @@ def grab_session(page):
 # ---------------------------------------------------------------------------
 # RegisterHost via batchexecute
 # ---------------------------------------------------------------------------
-def register_host_oauth(access_token, host_id, public_key, host_name):
-    """Eksperimental: registrasi host via batchexecute pakai OAuth Bearer token
-    (bukan cookie browser). Dicoba saat jalur kode manual dipakai."""
-    inner = json.dumps([host_id, public_key, host_name, CLIENT_ID])
-    f_req = json.dumps([[["RMf1af", inner, None, "generic"]]])
-    body = urllib.parse.urlencode({"f.req": f_req})
-    conn = http.client.HTTPSConnection("remotedesktop.google.com", timeout=60)
-    conn.request("POST", "/_/RemotingUi/data/batchexecute", body=body, headers={
-        "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
-        "Authorization": "Bearer " + access_token,
-        "Referer": "https://remotedesktop.google.com/access",
-    })
-    resp = conn.getresponse()
-    raw = resp.read().decode("utf-8", "replace")
-    conn.close()
-    if resp.status != 200:
-        log("register_host_oauth HTTP %d: %s" % (resp.status, raw[:300]))
-        return None
-    text = raw.lstrip().replace(")]}'", "", 1).lstrip()
-    try:
-        found = _extract_register((json.loads(text) if text.startswith("[") else None))
-        if found:
-            return found
-    except Exception as e:
-        log("register_host_oauth parse gagal: %s" % e)
-    return None
-
-
-def oauth_refresh_to_access(refresh_token):
-    """Eksperimental: tukar refresh token jadi access token via endpoint OAuth
-    Google. Coba tanpa client_secret dulu (asumsi public client).
-    Return (access_token, new_refresh_token, error_detail)."""
-    body = urllib.parse.urlencode({
-        "grant_type": "refresh_token",
-        "refresh_token": refresh_token,
-        "client_id": CLIENT_ID,
-    })
-    conn = http.client.HTTPSConnection("oauth2.googleapis.com", timeout=30)
-    conn.request("POST", "/token", body=body, headers={
-        "Content-Type": "application/x-www-form-urlencoded",
-    })
-    resp = conn.getresponse()
-    raw = resp.read().decode("utf-8", "replace")
-    conn.close()
-    if resp.status != 200:
-        err = "HTTP %d: %s" % (resp.status, raw[:200])
-        log("oauth token exchange gagal: %s" % err)
-        return None, None, err
-    try:
-        data = json.loads(raw)
-        new_rt = data.get("refresh_token") or refresh_token
-        if new_rt != refresh_token:
-            log("Refresh token di-rotasi Google, memakai yang baru di config.")
-        return data.get("access_token"), new_rt, None
-    except Exception as e:
-        err = "parse gagal: %s" % e
-        log("oauth token %s" % err)
-        return None, None, err
-
-
 def register_host(jar, at, host_id, public_key, host_name):
     inner = json.dumps([host_id, public_key, host_name, CLIENT_ID])
     f_req = json.dumps([[["RMf1af", inner, None, "generic"]]])
@@ -1485,12 +1405,10 @@ def main():
     password = os.environ.get("GOOGLE_PASS", "")
     pin = os.environ.get("CRD_PIN", "")
     name = os.environ.get("CRD_NAME", "mac-%s" % os.environ.get("GITHUB_RUN_ID", "runner")).strip()
-    manual_code = os.environ.get("CRD_AUTH_CODE", "").strip()
     if "@" not in user:
         die("GOOGLE_USER harus berupa email.")
-    # Jika pakai kode manual, password tidak wajib (login browser dilewati).
-    if not password and not manual_code:
-        die("GOOGLE_PASS kosong dan CRD_AUTH_CODE tidak diisi.")
+    if not password:
+        die("GOOGLE_PASS kosong.")
     if not re.fullmatch(r"\d{6,}", pin):
         die("CRD_PIN harus 6+ digit.")
     if not name:
@@ -1507,85 +1425,6 @@ def main():
         die("native_messaging_host tidak ditemukan di /Library/PrivilegedHelperTools.")
     log("Chrome: %s" % chrome)
     log("NM: %s" % nm_path)
-
-    # --- Jalur kode manual: lewati login browser sepenuhnya ---
-    if manual_code:
-        dlog("JALUR: kode manual (CRD_AUTH_CODE terisi), login browser dilewati.")
-        nm = None
-        try:
-            nm = NativeMessaging(nm_path)
-            keys = nm.call({"type": "generateKeyPair"}, timeout=60)
-            priv = keys.get("privateKey")
-            pub = keys.get("publicKey")
-            if not priv or not pub:
-                die("generateKeyPair gagal: %s" % json.dumps(keys)[:300])
-
-            new_host_id = host_id
-            dlog("Host ID (lokal): %s" % new_host_id)
-
-            pin_hash = nm.call({"type": "getPinHash", "hostId": new_host_id, "pin": pin}, timeout=60)
-            if "hash" not in pin_hash:
-                die("getPinHash gagal: %s" % json.dumps(pin_hash)[:300])
-
-            creds = nm.call({"type": "getCredentialsFromAuthCode",
-                             "authorizationCode": manual_code}, timeout=120)
-            if "refreshToken" not in creds or not creds.get("refreshToken"):
-                die("getCredentialsFromAuthCode gagal (kode manual mungkin kedaluwarsa/salah): %s"
-                    % json.dumps(creds)[:400])
-            dlog("getCredentialsFromAuthCode OK: refresh token didapat.")
-
-            refresh_token = creds["refreshToken"]
-            dlog("Panjang refresh token: %d karakter." % len(refresh_token))
-            # EKSPERIMENTAL: coba daftarkan host via OAuth (tanpa cookie browser).
-            # Kalau berhasil, host_id jadi resmi terdaftar di Google.
-            # PENTING: pakai refresh token BARU dari hasil exchange (rotating).
-            try:
-                dlog("Mencoba registrasi host via OAuth (eksperimental)...")
-                access_token, new_rt, err_detail = oauth_refresh_to_access(refresh_token)
-                if new_rt:
-                    refresh_token = new_rt
-                if access_token:
-                    dlog("Access token didapat, memanggil RegisterHost...")
-                    reg = register_host_oauth(access_token, host_id, pub, name)
-                    if reg:
-                        host_info, _ = reg
-                        if isinstance(host_info, list) and host_info:
-                            new_host_id = host_info[0]
-                        dlog("RegisterHost via OAuth OK -> hostId=%s" % new_host_id)
-                    else:
-                        dlog("RegisterHost via OAuth GAGAL, lanjut host_id lokal.")
-                else:
-                    dlog("Gagal dapat access token (%s), lanjut host_id lokal." % (err_detail or "unknown"))
-            except Exception as e:
-                dlog("Registrasi OAuth error (non-fatal): %s" % e)
-            dlog("Host ID final: %s" % new_host_id)
-
-            service_account = (creds.get("userEmail")
-                               or new_host_id.replace("-", "") + "@chromoting.gserviceaccount.com")
-            config = {
-                "host_id": new_host_id,
-                "host_name": name,
-                "host_owner": user.lower(),
-                "host_secret_hash": pin_hash["hash"],
-                "private_key": priv,
-                "service_account": service_account,
-                "xmpp_login": service_account,
-                "oauth_refresh_token": refresh_token,
-                "usage_stats_consent": True,
-            }
-            with open(SECRETS_OUT, "w") as f:
-                json.dump(config, f)
-            print(json.dumps(config, indent=2), flush=True)
-            log("SUKSES (kode manual): config ditulis ke %s (host %s)" % (SECRETS_OUT, new_host_id))
-            dlog("SUKSES: config ditulis.")
-            write_debug_summary()
-        finally:
-            try:
-                if nm:
-                    nm.close()
-            except Exception:
-                pass
-        return
 
     proc = launch_chrome(chrome)
     page = None

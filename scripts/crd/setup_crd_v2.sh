@@ -385,61 +385,6 @@ bounce_host() {
 # enroll.py mencetak JSON config ke stdout; hasil diletakkan ke CONFIG_FILE
 # dengan mode 644 (host jalan sebagai user biasa).
 # ---------------------------------------------------------------------------
-# Menunggu kode otorisasi manual via GitHub repo variable.
-# Dipakai bila CRD_AUTH_CODE tidak diisi saat trigger: runner sudah siap,
-# lalu polling variable CRD_AUTH_CODE_PENDING sampai Awan/Lyra mengisinya.
-# Memecahkan masalah kode kedaluwarsa (runner butuh 5+ menit untuk siap).
-wait_for_auth_code() {
-  local repo="${GITHUB_REPOSITORY:-gunawan-ly/My-MacOS}"
-  local token="${GITHUB_TOKEN:-}"
-  local var_name="CRD_AUTH_CODE_PENDING"
-  local timeout_secs=600  # 10 menit
-  local interval=15
-  local elapsed=0
-
-  # Kalau sudah diisi via input workflow, langsung pakai.
-  if [ -n "${CRD_AUTH_CODE:-}" ]; then
-    log "CRD_AUTH_CODE sudah diisi via input workflow."
-    return 0
-  fi
-
-  if [ -z "$token" ]; then
-    die "GITHUB_TOKEN kosong, tidak bisa polling kode."
-  fi
-
-  log "Menunggu kode otorisasi di repo variable '$var_name'..."
-  log "Cara isi: gh variable set $var_name --repo $repo --body 'KODE_ANDA'"
-  log "Atau via GitHub UI: Settings > Secrets and variables > Actions > Variables."
-  log "Timeout: $timeout_secs detik."
-
-  while [ "$elapsed" -lt "$timeout_secs" ]; do
-    local code
-    code="$(curl -sS -H "Authorization: Bearer $token" \
-      -H "Accept: application/vnd.github+json" \
-      "https://api.github.com/repos/$repo/actions/variables/$var_name" 2>/dev/null \
-      | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('value',''))" 2>/dev/null)"
-    # Abaikan placeholder "PENDING" dan string kosong.
-    if [ -n "$code" ] && [ "$code" != "PENDING" ]; then
-      log "Kode diterima (panjang ${#code} karakter)."
-      CRD_AUTH_CODE="$code"
-      export CRD_AUTH_CODE
-      # Hapus variable (kembalikan ke placeholder) agar tidak dipakai ulang.
-      curl -sS -X PATCH -H "Authorization: Bearer $token" \
-        -H "Accept: application/vnd.github+json" \
-        -H "Content-Type: application/json" \
-        -d '{"value":"PENDING"}' \
-        "https://api.github.com/repos/$repo/actions/variables/$var_name" >/dev/null 2>&1 || true
-      log "Variable '$var_name' dikembalikan ke PENDING."
-      return 0
-    fi
-    sleep "$interval"
-    elapsed=$((elapsed + interval))
-    log "Masih menunggu kode... (${elapsed}s/${timeout_secs}s)"
-  done
-
-  die "Timeout menunggu kode otorisasi setelah ${timeout_secs} detik."
-}
-
 enroll_host() {
   local ENROLL TMP CONFIG_JSON rc
   ENROLL="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/enroll.py"
@@ -451,15 +396,9 @@ enroll_host() {
   CONFIG_JSON="$(env CRD_NAME="$CRD_NAME" GOOGLE_USER="$GOOGLE_USER" \
                     GOOGLE_PASS="$GOOGLE_PASS" CRD_PIN="$CRD_PIN" \
                     CRD_OTP="${CRD_OTP:-}" CRD_CLEANUP="${CRD_CLEANUP:-0}" \
-                    CRD_AUTH_CODE="${CRD_AUTH_CODE:-}" \
+                    CRD_SESSION_FILE="${CRD_SESSION_FILE:-}" \
                     python3 "$ENROLL" 2>/tmp/crd.enroll.err.log)"
   rc=$?
-  # Tampilkan ringkasan debug dari enroll.py (jalur kode manual) ke workflow log.
-  if [ -f /tmp/crd.enroll.summary ]; then
-    echo "--- Ringkasan enroll.py ---"
-    cat /tmp/crd.enroll.summary
-    echo "--- Akhir ringkasan ---"
-  fi
   if [ "$rc" -ne 0 ]; then
     cat /tmp/crd.enroll.err.log 2>/dev/null || true
     die "Enrollment gagal. Penyebab umum: 2FA/CAPTCHA, password salah, Chrome belum terpasang."
@@ -567,10 +506,7 @@ PY
 main() {
   [ -n "$GOOGLE_USER" ] || die "GOOGLE_USER kosong (email akun pemilik CRD)."
   case "$GOOGLE_USER" in *@*) ;; *) die "GOOGLE_USER bukan email valid.";; esac
-  # GOOGLE_PASS tidak wajib bila pakai kode manual (CRD_AUTH_CODE).
-  if [ -z "${CRD_AUTH_CODE:-}" ]; then
-    [ -n "$GOOGLE_PASS" ] || die "GOOGLE_PASS kosong (atau isi CRD_AUTH_CODE untuk jalur manual)."
-  fi
+  [ -n "$GOOGLE_PASS" ] || die "GOOGLE_PASS kosong."
   [ -n "$CRD_PIN" ] || die "CRD_PIN kosong."
   echo "$CRD_PIN" | grep -Eq '^[0-9]{6,}$' || die "CRD_PIN harus angka 6+ digit."
   command -v sqlite3 >/dev/null 2>&1 || die "sqlite3 tidak ada."
@@ -584,10 +520,6 @@ main() {
   install_host
   local HOST_BIN
   HOST_BIN="$(discover_host_bin)"
-
-  # Tunggu kode otorisasi (via input atau polling variable).
-  # Dilakukan SETELAH install agar kode tidak kedaluwarsa saat runner siap.
-  wait_for_auth_code
 
   enroll_host
 
