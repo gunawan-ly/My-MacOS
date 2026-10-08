@@ -151,19 +151,21 @@ jobs:
           key: crd-session-${{ secrets.GOOGLE_USER }}-${{ github.run_id }}
           enableCrossOsArchive: true
 
-      - name: Upload Debug Artifacts
-        if: ${{ always() }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: crd-debug-${{ github.run_id }}
-          if-no-files-found: warn
-          path: |
-            /tmp/crd-*.png
-            /tmp/crd-*.log
-            /tmp/crd.enroll.err.log
-            /tmp/crd.code
-            /tmp/crd.dmg
-            /tmp/crd.start.log
+      # DIMATIKAN SEMENTARA (2026-10-08): upload artifact timeout terus
+      # karena file crd.dmg 40MB. Aktifkan lagi kalau butuh debug screenshot.
+      # - name: Upload Debug Artifacts
+      #   if: ${{ always() }}
+      #   uses: actions/upload-artifact@v4
+      #   with:
+      #     name: crd-debug-${{ github.run_id }}
+      #     if-no-files-found: warn
+      #     path: |
+      #       /tmp/crd-*.png
+      #       /tmp/crd-*.log
+      #       /tmp/crd.enroll.err.log
+      #       /tmp/crd.code
+      #       /tmp/crd.dmg
+      #       /tmp/crd.start.log
 
       - name: Keep Alive
         if: ${{ success() }}
