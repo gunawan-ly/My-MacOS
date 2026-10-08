@@ -1529,12 +1529,13 @@ def main():
 
             creds = nm.call({"type": "getCredentialsFromAuthCode",
                              "authorizationCode": manual_code}, timeout=120)
-            if "refreshToken" not in creds:
+            if "refreshToken" not in creds or not creds.get("refreshToken"):
                 die("getCredentialsFromAuthCode gagal (kode manual mungkin kedaluwarsa/salah): %s"
                     % json.dumps(creds)[:400])
             dlog("getCredentialsFromAuthCode OK: refresh token didapat.")
 
             refresh_token = creds["refreshToken"]
+            dlog("Panjang refresh token: %d karakter." % len(refresh_token))
             # EKSPERIMENTAL: coba daftarkan host via OAuth (tanpa cookie browser).
             # Kalau berhasil, host_id jadi resmi terdaftar di Google.
             # PENTING: pakai refresh token BARU dari hasil exchange (rotating).
