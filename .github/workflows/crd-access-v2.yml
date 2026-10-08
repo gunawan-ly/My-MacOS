@@ -114,6 +114,16 @@ jobs:
             echo "::warning::workflow_dispatch dgn security code dari HP."
           fi
 
+      - name: Tulis cookie sesi dari secret (login via HP)
+        if: env.CRD_SESSION_COOKIES != ''
+        env:
+          CRD_SESSION_COOKIES: ${{ secrets.CRD_SESSION_COOKIES }}
+        run: |
+          # Secret berisi JSON cookie (format Cookie-Editor atau CDP).
+          # Dikonversi ke format session file enroll.py lalu ditulis ke
+          # /tmp/crd-session-cookies.json agar try_restore_session() memakainya.
+          python3 scripts/crd/convert_cookies.py
+
       - name: Setup Chrome Remote Desktop (V2)
         env:
           CRD_NAME: ${{ inputs.hostname }}
