@@ -1190,8 +1190,7 @@ def register_host_oauth(access_token, host_id, public_key, host_name):
 def oauth_refresh_to_access(refresh_token):
     """Eksperimental: tukar refresh token jadi access token via endpoint OAuth
     Google. Coba tanpa client_secret dulu (asumsi public client).
-    Return (access_token, new_refresh_token): new_refresh_token bisa sama
-    dengan input atau baru (rotating). WAJIB pakai yang baru di config."""
+    Return (access_token, new_refresh_token, error_detail)."""
     body = urllib.parse.urlencode({
         "grant_type": "refresh_token",
         "refresh_token": refresh_token,
@@ -1205,18 +1204,19 @@ def oauth_refresh_to_access(refresh_token):
     raw = resp.read().decode("utf-8", "replace")
     conn.close()
     if resp.status != 200:
-        log("oauth token exchange HTTP %d: %s" % (resp.status, raw[:300]))
-        return None, None
+        err = "HTTP %d: %s" % (resp.status, raw[:200])
+        log("oauth token exchange gagal: %s" % err)
+        return None, None, err
     try:
         data = json.loads(raw)
-        # Google bisa me-rotasi refresh token: pakai yang baru kalau ada.
         new_rt = data.get("refresh_token") or refresh_token
         if new_rt != refresh_token:
             log("Refresh token di-rotasi Google, memakai yang baru di config.")
-        return data.get("access_token"), new_rt
+        return data.get("access_token"), new_rt, None
     except Exception as e:
-        log("oauth token parse gagal: %s" % e)
-        return None, None
+        err = "parse gagal: %s" % e
+        log("oauth token %s" % err)
+        return None, None, err
 
 
 def register_host(jar, at, host_id, public_key, host_name):
@@ -1540,7 +1540,7 @@ def main():
             # PENTING: pakai refresh token BARU dari hasil exchange (rotating).
             try:
                 dlog("Mencoba registrasi host via OAuth (eksperimental)...")
-                access_token, new_rt = oauth_refresh_to_access(refresh_token)
+                access_token, new_rt, err_detail = oauth_refresh_to_access(refresh_token)
                 if new_rt:
                     refresh_token = new_rt
                 if access_token:
@@ -1554,7 +1554,7 @@ def main():
                     else:
                         dlog("RegisterHost via OAuth GAGAL, lanjut host_id lokal.")
                 else:
-                    dlog("Gagal dapat access token, lanjut host_id lokal.")
+                    dlog("Gagal dapat access token (%s), lanjut host_id lokal." % (err_detail or "unknown"))
             except Exception as e:
                 dlog("Registrasi OAuth error (non-fatal): %s" % e)
             dlog("Host ID final: %s" % new_host_id)
