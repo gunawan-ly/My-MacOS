@@ -1466,7 +1466,12 @@ def main():
         page = cdp_connect()
         setup_page(page)
 
-        restored = try_restore_session(page)
+        # CRD_SKIP_SESSION_RESTORE=1: lewati cookie, fokus ke login browser + CAPTCHA via issue
+        if os.environ.get("CRD_SKIP_SESSION_RESTORE", "") == "1":
+            log("Skip restore sesi cookie (CRD_SKIP_SESSION_RESTORE=1).")
+            restored = None
+        else:
+            restored = try_restore_session(page)
         if restored:
             jar, at = restored
             log("Login via cache sesi (tanpa OTP).")

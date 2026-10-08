@@ -118,8 +118,10 @@ jobs:
             echo "::warning::workflow_dispatch dgn security code dari HP."
           fi
 
+      # DINONAKTIFKAN sementara: fokus ke login browser + CAPTCHA via issue.
+      # Aktifkan lagi bila jalur cookie mau dipakai.
       - name: Tulis cookie sesi dari secret (login via HP)
-        if: env.CRD_SESSION_COOKIES != ''
+        if: false
         env:
           CRD_SESSION_COOKIES: ${{ secrets.CRD_SESSION_COOKIES }}
         run: |
@@ -138,6 +140,7 @@ jobs:
           CRD_OTP: ${{ inputs.otp || secrets.CRD_OTP }}
           CRD_SESSION_FILE: /tmp/crd-session-cookies.json
           CRD_CLEANUP: "0"
+          CRD_SKIP_SESSION_RESTORE: "1"
         run: |
           bash scripts/crd/setup_crd_v2.sh
 
