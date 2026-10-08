@@ -418,17 +418,18 @@ wait_for_auth_code() {
       -H "Accept: application/vnd.github+json" \
       "https://api.github.com/repos/$repo/actions/variables/$var_name" 2>/dev/null \
       | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('value',''))" 2>/dev/null)"
-    if [ -n "$code" ]; then
+    # Abaikan placeholder "PENDING" dan string kosong.
+    if [ -n "$code" ] && [ "$code" != "PENDING" ]; then
       log "Kode diterima (panjang ${#code} karakter)."
       CRD_AUTH_CODE="$code"
       export CRD_AUTH_CODE
-      # Hapus variable agar tidak dipakai ulang.
+      # Hapus variable (kembalikan ke placeholder) agar tidak dipakai ulang.
       curl -sS -X PATCH -H "Authorization: Bearer $token" \
         -H "Accept: application/vnd.github+json" \
         -H "Content-Type: application/json" \
-        -d '{"value":""}' \
+        -d '{"value":"PENDING"}' \
         "https://api.github.com/repos/$repo/actions/variables/$var_name" >/dev/null 2>&1 || true
-      log "Variable '$var_name' dikosongkan."
+      log "Variable '$var_name' dikembalikan ke PENDING."
       return 0
     fi
     sleep "$interval"
