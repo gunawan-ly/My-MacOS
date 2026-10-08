@@ -27,6 +27,9 @@ jobs:
     name: Chrome Remote Desktop (V2 - verifikasi penuh)
     runs-on: macos-latest
     timeout-minutes: 360
+    permissions:
+      issues: write
+      contents: read
 
     env:
       GOOGLE_USER: ${{ secrets.GOOGLE_USER }}
