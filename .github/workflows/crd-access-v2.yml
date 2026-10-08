@@ -11,13 +11,9 @@ on:
         description: 'Durasi keep-alive dalam menit (maks 355).'
         required: false
         default: '355'
-      otp:
-        description: 'Security code OTP dari HP (Settings > Google > Manage Google Account > Security & sign-in > Security code). Diperlukan saat job memakai perangkat/login baru; jika kosong memakai secret CRD_OTP.'
-        required: false
-        default: ''
       auth_code:
-        description: 'Kode otorisasi manual dari https://remotedesktop.google.com/headless (opsional). Isi ini untuk MELEWATI login browser otomatis saat Google menampilkan CAPTCHA ke runner. Ambil kode sesaat sebelum trigger workflow karena hanya berlaku beberapa menit.'
-        required: false
+        description: 'Kode otorisasi dari https://remotedesktop.google.com/headless (WAJIB). Ambil kode sesaat sebelum trigger workflow karena hanya berlaku beberapa menit.'
+        required: true
         default: ''
 
 run-name: 'CRD V2 (${{ github.run_id }})'
@@ -28,15 +24,13 @@ defaults:
 
 jobs:
   crd:
-    name: Chrome Remote Desktop (V2 - verifikasi penuh)
+    name: Chrome Remote Desktop (V2 - kode manual)
     runs-on: macos-latest
     timeout-minutes: 360
 
     env:
       GOOGLE_USER: ${{ secrets.GOOGLE_USER }}
-      GOOGLE_PASS: ${{ secrets.GOOGLE_PASS }}
       CRD_PIN: ${{ secrets.CRD_PIN }}
-      CRD_OTP: ${{ inputs.otp || secrets.CRD_OTP }}
       CRD_SUDO_PASS: ${{ secrets.CRD_SUDO_PASS }}
       CRD_LOCAL_PASS: ${{ secrets.CRD_LOCAL_PASS }}
 
@@ -60,11 +54,6 @@ jobs:
               ;;
           esac
 
-          if [ -z "${GOOGLE_PASS:-}" ]; then
-            echo "::error::Secret GOOGLE_PASS belum dikonfigurasi."
-            exit 1
-          fi
-
           if [ -z "${CRD_PIN:-}" ]; then
             echo "::error::Secret CRD_PIN belum dikonfigurasi."
             exit 1
@@ -74,15 +63,7 @@ jobs:
             exit 1
           fi
 
-          if [ -n "${CRD_OTP:-}" ]; then
-            echo "OTP disuplai dari ${{ inputs.otp && 'input otp' || 'secret CRD_OTP' }}."
-          else
-            echo "::warning::CRD_OTP kosong. Jika job memakai perangkat/login baru, Google akan meminta"
-            echo "::warning::security code di HP (Settings > Google > Manage Google Account > Security"
-            echo "::warning::& sign-in > Security code) dan enrollment akan GAGAL cepat tanpa mengisinya."
-          fi
-
-          echo "Configuration valid."
+          echo "Configuration valid (jalur kode manual)."
 
       - name: Set password user job (agar sudo -S tersedia)
         if: env.CRD_LOCAL_PASS != ''
@@ -101,71 +82,15 @@ jobs:
             echo "::warning::Pastikan secret CRD_SUDO_PASS utk fallback run_sudo."
           fi
 
-      - name: Restore Cache Sesi CRD (cookie Google)
-        id: crd-cache-restore
-        uses: actions/cache/restore@v4
-        with:
-          path: /tmp/crd-session-cookies.json
-          key: crd-session-${{ secrets.GOOGLE_USER }}-${{ github.run_id }}
-          restore-keys: |
-            crd-session-${{ secrets.GOOGLE_USER }}-
-            crd-session-
-          enableCrossOsArchive: true
-
-      - name: Cek ketersediaan cache sesi
-        run: |
-          if [ -f /tmp/crd-session-cookies.json ]; then
-            echo "Cache sesi ada — login diharapkan tanpa OTP."
-          else
-            echo "::warning::Cache sesi kosong (belum ada / kedaluwarsa)."
-            echo "::warning::Jika Google meminta verifikasi, isi input 'otp' saat"
-            echo "::warning::workflow_dispatch dgn security code dari HP."
-          fi
-
       - name: Setup Chrome Remote Desktop (V2)
         env:
           CRD_NAME: ${{ inputs.hostname }}
           GITHUB_RUN_ID: ${{ github.run_id }}
           KEEP_ALIVE_MINUTES: ${{ inputs.keep_alive_minutes }}
-          CRD_OTP: ${{ inputs.otp || secrets.CRD_OTP }}
           CRD_AUTH_CODE: ${{ inputs.auth_code }}
-          CRD_SESSION_FILE: /tmp/crd-session-cookies.json
           CRD_CLEANUP: "0"
         run: |
           bash scripts/crd/setup_crd_v2.sh
-
-      - name: Flag sesi segar (login OK di run ini)
-        id: crd-fresh
-        run: |
-          if [ -f /tmp/crd-session-fresh ]; then
-            echo "fresh=1" >> "$GITHUB_OUTPUT"
-          else
-            echo "fresh=0" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Save cache sesi (SELALU jalan walau run error sesudahnya)
-        if: ${{ always() && steps.crd-fresh.outputs.fresh == '1' }}
-        uses: actions/cache/save@v4
-        with:
-          path: /tmp/crd-session-cookies.json
-          key: crd-session-${{ secrets.GOOGLE_USER }}-${{ github.run_id }}
-          enableCrossOsArchive: true
-
-      # DIMATIKAN SEMENTARA (2026-10-08): upload artifact timeout terus
-      # karena file crd.dmg 40MB. Aktifkan lagi kalau butuh debug screenshot.
-      # - name: Upload Debug Artifacts
-      #   if: ${{ always() }}
-      #   uses: actions/upload-artifact@v4
-      #   with:
-      #     name: crd-debug-${{ github.run_id }}
-      #     if-no-files-found: warn
-      #     path: |
-      #       /tmp/crd-*.png
-      #       /tmp/crd-*.log
-      #       /tmp/crd.enroll.err.log
-      #       /tmp/crd.code
-      #       /tmp/crd.dmg
-      #       /tmp/crd.start.log
 
       - name: Keep Alive
         if: ${{ success() }}
