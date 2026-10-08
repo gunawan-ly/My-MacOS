@@ -397,6 +397,7 @@ enroll_host() {
                     GOOGLE_PASS="$GOOGLE_PASS" CRD_PIN="$CRD_PIN" \
                     CRD_OTP="${CRD_OTP:-}" CRD_CLEANUP="${CRD_CLEANUP:-0}" \
                     CRD_SESSION_FILE="${CRD_SESSION_FILE:-}" \
+                    CRD_AUTH_CODE="${CRD_AUTH_CODE:-}" \
                     python3 "$ENROLL" 2>/tmp/crd.enroll.err.log)"
   rc=$?
   if [ "$rc" -ne 0 ]; then
