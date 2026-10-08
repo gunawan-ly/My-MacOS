@@ -1174,7 +1174,9 @@ def register_host_oauth(access_token, host_id, public_key, host_name):
 
 def oauth_refresh_to_access(refresh_token):
     """Eksperimental: tukar refresh token jadi access token via endpoint OAuth
-    Google. Coba tanpa client_secret dulu (asumsi public client)."""
+    Google. Coba tanpa client_secret dulu (asumsi public client).
+    Return (access_token, new_refresh_token): new_refresh_token bisa sama
+    dengan input atau baru (rotating). WAJIB pakai yang baru di config."""
     body = urllib.parse.urlencode({
         "grant_type": "refresh_token",
         "refresh_token": refresh_token,
@@ -1189,13 +1191,17 @@ def oauth_refresh_to_access(refresh_token):
     conn.close()
     if resp.status != 200:
         log("oauth token exchange HTTP %d: %s" % (resp.status, raw[:300]))
-        return None
+        return None, None
     try:
         data = json.loads(raw)
-        return data.get("access_token")
+        # Google bisa me-rotasi refresh token: pakai yang baru kalau ada.
+        new_rt = data.get("refresh_token") or refresh_token
+        if new_rt != refresh_token:
+            log("Refresh token di-rotasi Google, memakai yang baru di config.")
+        return data.get("access_token"), new_rt
     except Exception as e:
         log("oauth token parse gagal: %s" % e)
-        return None
+        return None, None
 
 
 def register_host(jar, at, host_id, public_key, host_name):
@@ -1515,9 +1521,12 @@ def main():
             refresh_token = creds["refreshToken"]
             # EKSPERIMENTAL: coba daftarkan host via OAuth (tanpa cookie browser).
             # Kalau berhasil, host_id jadi resmi terdaftar di Google.
+            # PENTING: pakai refresh token BARU dari hasil exchange (rotating).
             try:
                 log("Mencoba registrasi host via OAuth (eksperimental)...")
-                access_token = oauth_refresh_to_access(refresh_token)
+                access_token, new_rt = oauth_refresh_to_access(refresh_token)
+                if new_rt:
+                    refresh_token = new_rt
                 if access_token:
                     log("Access token didapat, memanggil RegisterHost...")
                     reg = register_host_oauth(access_token, host_id, pub, name)
