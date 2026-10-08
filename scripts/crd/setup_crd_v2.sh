@@ -506,7 +506,10 @@ PY
 main() {
   [ -n "$GOOGLE_USER" ] || die "GOOGLE_USER kosong (email akun pemilik CRD)."
   case "$GOOGLE_USER" in *@*) ;; *) die "GOOGLE_USER bukan email valid.";; esac
-  [ -n "$GOOGLE_PASS" ] || die "GOOGLE_PASS kosong."
+  # GOOGLE_PASS tidak wajib bila pakai kode manual (CRD_AUTH_CODE).
+  if [ -z "${CRD_AUTH_CODE:-}" ]; then
+    [ -n "$GOOGLE_PASS" ] || die "GOOGLE_PASS kosong (atau isi CRD_AUTH_CODE untuk jalur manual)."
+  fi
   [ -n "$CRD_PIN" ] || die "CRD_PIN kosong."
   echo "$CRD_PIN" | grep -Eq '^[0-9]{6,}$' || die "CRD_PIN harus angka 6+ digit."
   command -v sqlite3 >/dev/null 2>&1 || die "sqlite3 tidak ada."
