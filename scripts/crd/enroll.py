@@ -1160,17 +1160,59 @@ def grab_session(page):
     } for c in cookies]
     html = js(page, "document.documentElement.outerHTML", timeout=30) or ""
     m = re.search(r"AAzdMo[a-zA-Z0-9_-]+:[0-9]+", html)
-    if not m:
+    _token = m.group(0) if m else None
+    # Fallback 1: cari via JavaScript (token mungkin di JS variable)
+    if not _token:
+        log("Token tidak ketemu di HTML, coba via JavaScript...")
+        _js_probe = """
+        (function() {
+            var out = null;
+            // Cari di window globals
+            for (var k in window) {
+                try {
+                    var v = window[k];
+                    if (typeof v === 'string' && v.length > 30 && v.length < 200) {
+                        if (/^[A-Za-z0-9_-]+:[0-9]+$/.test(v)) { out = v; break; }
+                    }
+                } catch(e) {}
+            }
+            // Cari di document HTML dengan pola longgar
+            if (!out) {
+                var h = document.documentElement.outerHTML;
+                var mm = h.match(/[A-Za-z0-9_-]{20,}:[0-9]{5,}/);
+                if (mm) out = mm[0];
+            }
+            return out || "";
+        })()
+        """
+        try:
+            _js_result = js(page, _js_probe, timeout=15) or ""
+            if _js_result and len(_js_result) > 20:
+                log("Token ketemu via JS: %s..." % _js_result[:20])
+                _token = _js_result
+        except Exception as _e:
+            log("JS probe gagal: %s" % _e)
+    # Fallback 2: urllib (legacy)
+    if not _token:
         try:
             with urllib.request.urlopen("https://remotedesktop.google.com/access", timeout=30) as r:
                 html2 = r.read().decode("utf-8", "replace")
-            m = re.search(r"AAzdMo[a-zA-Z0-9_-]+:[0-9]+", html2)
+            m2 = re.search(r"AAzdMo[a-zA-Z0-9_-]+:[0-9]+", html2)
+            if m2:
+                _token = m2.group(0)
         except Exception:
-            m = None
-    if not m:
+            pass
+    if not _token:
+        # Simpan HTML untuk debug
+        try:
+            with open("/tmp/xsrf-debug.html", "w") as _f:
+                _f.write(html[:200000])
+            log("HTML debug disimpan (200KB pertama)")
+        except:
+            pass
         die("Token XSRF `at` tidak ditemukan di /access. Login mungkin belum aktif penuh.")
-    log("cookie sesi: %d cookie; at: %s..." % (len(jar), m.group(0)[:20]))
-    return jar, m.group(0)
+    log("cookie sesi: %d cookie; at: %s..." % (len(jar), _token[:20]))
+    return jar, _token
 
 
 # ---------------------------------------------------------------------------
