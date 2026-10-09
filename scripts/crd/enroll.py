@@ -1183,7 +1183,7 @@ def login_google(page, user, password):
         )
 
 
-def grab_session(page):
+def grab_session(page, retries=5):
     cookies = page.call("Network.getCookies", {"urls": ["https://remotedesktop.google.com/",
                                                         "https://accounts.google.com/"]}).get("cookies", [])
     if not cookies:
@@ -1193,8 +1193,28 @@ def grab_session(page):
         "domain": c.get("domain"), "path": c.get("path", "/"),
         "secure": bool(c.get("secure")), "httpOnly": bool(c.get("httpOnly")),
     } for c in cookies]
-    html = js(page, "document.documentElement.outerHTML", timeout=30) or ""
-    m = re.search(r"AAzdMo[a-zA-Z0-9_-]+:[0-9]+", html)
+    # Retry cari token XSRF karena halaman butuh waktu untuk inject via JS
+    m = None
+    for attempt in range(retries):
+        html = js(page, "document.documentElement.outerHTML", timeout=30) or ""
+        m = re.search(r"AAzdMo[a-zA-Z0-9_-]+:[0-9]+", html)
+        if m:
+            break
+        # Coba pola alternatif (Google kadang ganti format)
+        m = re.search(r'"at"\s*:\s*"([A-Za-z0-9_-]+:[0-9]+)"', html)
+        if m:
+            # Normalisasi ke format yang diharapkan
+            m = re.search(r"[A-Za-z0-9_-]+:[0-9]+", m.group(1))
+            break
+        log("token XSRF belum ketemu (percobaan %d/%d), tunggu 10 dtk..." % (attempt + 1, retries))
+        time.sleep(10)
+        # Refresh halaman sekali di tengah retry
+        if attempt == 2:
+            try:
+                page.call("Page.navigate", {"url": "https://remotedesktop.google.com/access"})
+                wait_until(page, "document.readyState === 'complete'", 30)
+            except Exception:
+                pass
     if not m:
         try:
             with urllib.request.urlopen("https://remotedesktop.google.com/access", timeout=30) as r:
@@ -1203,7 +1223,7 @@ def grab_session(page):
         except Exception:
             m = None
     if not m:
-        die("Token XSRF `at` tidak ditemukan di /access. Login mungkin belum aktif penuh.")
+        die("Token XSRF `at` tidak ditemukan di /access setelah %d percobaan. Login mungkin belum aktif penuh." % retries)
     log("cookie sesi: %d cookie; at: %s..." % (len(jar), m.group(0)[:20]))
     return jar, m.group(0)
 
