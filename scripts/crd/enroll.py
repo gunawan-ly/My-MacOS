@@ -397,6 +397,7 @@ def type_into(page, selector, value):
         "})()" % json.dumps(selector),
         timeout=15
     )
+    return True
 
 def click_login_button(page):
     selector = """
