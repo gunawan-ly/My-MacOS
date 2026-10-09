@@ -34,7 +34,6 @@ import socket
 import struct
 import subprocess
 import sys
-import sys
 import threading
 import time
 import urllib.parse
