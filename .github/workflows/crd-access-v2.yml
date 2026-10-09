@@ -175,11 +175,17 @@ jobs:
         with:
           authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
           hostname: gh-crd-runner
-          args: --exit-node=100.66.25.126 --accept-routes
 
-      - name: "Cek IP via exit node"
+      - name: "Aktifkan exit node HP Awan"
         run: |
-          echo "IP publik (harusnya IP seluler Awan):"
+          # Set exit node secara eksplisit (flag di action kadang nggak kepake)
+          sudo tailscale set --exit-node=100.66.25.126 --accept-routes || {
+            echo "::warning::Gagal set exit node, coba tanpa --accept-routes"
+            sudo tailscale set --exit-node=100.66.25.126 || echo "::warning::Exit node gagal total, lanjut tanpa VPN"
+          }
+          echo "--- tailscale status ---"
+          tailscale status || true
+          echo "--- IP publik (harusnya IP seluler Awan) ---"
           curl -s -m 10 https://ifconfig.me || echo "cek IP gagal"
 
       - name: Setup Chrome Remote Desktop (V2)
