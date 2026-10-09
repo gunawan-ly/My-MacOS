@@ -351,6 +351,35 @@ def wait_until(page, expr, timeout=30, invert=False):
     return False
 
 
+def wait_until_or_captcha(page, expr, timeout=30, invert=False, captcha_interval=10):
+    """Wait untuk kondisi, tapi cek CAPTCHA berkala.
+    Return: True (kondisi terpenuhi), "captcha" (CAPTCHA terdeteksi), False (timeout).
+    """
+    deadline = time.time() + timeout
+    last_captcha_check = 0
+    while time.time() < deadline:
+        # Cek CAPTCHA setiap captcha_interval detik
+        now = time.time()
+        if now - last_captcha_check >= captcha_interval:
+            last_captcha_check = now
+            try:
+                import captcha_helper
+                _js_fn = lambda e, t=10: js(page, e, timeout=t)
+                if captcha_helper.is_captcha_page(_js_fn):
+                    log("CAPTCHA terdeteksi saat menunggu (early detection).")
+                    return "captcha"
+            except Exception:
+                pass
+        try:
+            v = js(page, expr, timeout=10)
+            if bool(v) is not invert:
+                return True
+        except Exception:
+            pass
+        time.sleep(0.8)
+    return False
+
+
 def type_into(page, selector, value):
     ok = js(
         page,
@@ -753,11 +782,28 @@ def login_google(page, user, password):
         "input[autocomplete=username]"
     )
 
-    if not wait_until(
+    _email_result = wait_until_or_captcha(
         page,
         "!!document.querySelector(%s)" % json.dumps(email_selector),
-        120
-    ):
+        120,
+        captcha_interval=15
+    )
+    if _email_result == "captcha":
+        log("CAPTCHA terdeteksi saat menunggu input email (early).")
+        dump_state(page, "login-email-captcha")
+        _s = screenshot(page, "login-email-captcha")
+        if _s:
+            try:
+                import captcha_helper
+                captcha_helper.upload_screenshot_artifact(_s)
+            except:
+                pass
+        _retry = int(os.environ.get("CAPTCHA_RETRY", "0"))
+        if _retry < 3:
+            log(f"CAPTCHA early di email phase (retry {_retry}/3). Trigger run baru...")
+            sys.exit(42)
+        log("Retry habis, lanjut...")
+    if not _email_result:
         href = js(page, "location.href", timeout=10) or ""
         if href.startswith("https://remotedesktop.google.com"):
             log("Terarah ke CRD tanpa perlu login; lanjut.")
@@ -811,11 +857,30 @@ def login_google(page, user, password):
         "}return false;})()" % json.dumps(password_selector)
     )
 
-    if not wait_until(
+    _pwd_result = wait_until_or_captcha(
         page,
         visible_password_js,
-        60
-    ):
+        60,
+        captcha_interval=10
+    )
+    if _pwd_result == "captcha":
+        # CAPTCHA terdeteksi lebih awal, langsung trigger auto-retry
+        log("CAPTCHA terdeteksi saat menunggu password (early detection).")
+        dump_state(page, "login-password-captcha")
+        _s = screenshot(page, "login-password-captcha")
+        if _s:
+            try:
+                import captcha_helper
+                captcha_helper.upload_screenshot_artifact(_s)
+            except:
+                pass
+        _retry = int(os.environ.get("CAPTCHA_RETRY", "0"))
+        if _retry < 3:
+            log(f"CAPTCHA early detected (retry {_retry}/3). Trigger run baru...")
+            sys.exit(42)
+        # Jika retry habis, lanjut ke manual flow di bawah
+        log("Retry habis, lanjut ke manual CAPTCHA handling...")
+    if not _pwd_result:
         dump_state(page, "login-password")
         screenshot(page, "login-password")
         # CAPTCHA check sebelum die
