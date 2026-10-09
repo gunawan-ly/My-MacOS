@@ -133,6 +133,39 @@ def write_job_summary_image(screenshot_path, caption):
         return False
 
 
+def upload_screenshot_artifact(screenshot_path, artifact_name=None):
+    """
+    Upload screenshot sebagai artifact LANGSUNG dari dalam step yang berjalan,
+    memakai Node.js @actions/artifact resmi. Artifact langsung terlihat di
+    halaman run tanpa menunggu step selesai.
+    Return True bila berhasil.
+    """
+    if not screenshot_path or not os.path.exists(screenshot_path):
+        log("screenshot tidak ditemukan: %s" % screenshot_path)
+        return False
+    run_id = os.environ.get("GITHUB_RUN_ID", "manual")
+    name = artifact_name or ("crd-captcha-%s" % run_id)
+    script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "upload_artifact.js")
+    if not os.path.exists(script):
+        log("upload_artifact.js tidak ditemukan")
+        return False
+    try:
+        import subprocess
+        r = subprocess.run(
+            ["node", script, name, screenshot_path],
+            cwd=os.path.dirname(script),
+            capture_output=True, text=True, timeout=120)
+        if r.returncode == 0:
+            log("artifact '%s' diupload langsung" % name)
+            return True
+        else:
+            log("upload artifact gagal: %s" % r.stderr[:300])
+            return False
+    except Exception as e:
+        log("upload artifact error: %s" % e)
+        return False
+
+
 def create_status_issue(screenshot_path, note):
     """
     Buat issue status. Screenshot ditampilkan via job summary (base64 embedded),

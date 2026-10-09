@@ -145,6 +145,10 @@ jobs:
           CRD_CLEANUP: "0"
           CRD_SKIP_SESSION_RESTORE: "1"
         run: |
+          # Install deps untuk upload artifact langsung dari enroll.py
+          if [ -f scripts/crd/package.json ]; then
+            (cd scripts/crd && npm install --no-audit --no-fund --silent) || echo "::warning::npm install gagal, upload langsung dinonaktifkan"
+          fi
           bash scripts/crd/setup_crd_v2.sh phase1
 
       - name: Upload Screenshot Login

@@ -823,11 +823,13 @@ def login_google(page, user, password):
         dump_state(page, "login-password")
         screenshot_path = screenshot(page, "login-password")
 
-        # Buat issue + tulis gambar ke job summary (langsung terlihat).
-        # Hanya aktif bila GITHUB_TOKEN tersedia (di dalam Actions).
+        # Upload screenshot LANGSUNG sebagai artifact (terlihat saat itu juga),
+        # lalu buat issue. Hanya aktif bila di dalam Actions.
         issue_number = None
         try:
             import captcha_helper
+            # Upload dulu agar Awan bisa langsung lihat gambarnya
+            captcha_helper.upload_screenshot_artifact(screenshot_path)
             issue_number = captcha_helper.create_status_issue(
                 screenshot_path,
                 "Halaman login setelah email dikirim — kolom password belum muncul.")
