@@ -166,31 +166,64 @@ def upload_screenshot_artifact(screenshot_path, artifact_name=None):
         return False
 
 
+def upload_to_imgur(screenshot_path):
+    """
+    Upload screenshot ke Imgur (anonim). Return URL gambar atau None.
+    CAPTCHA bukan data sensitif, jadi aman di-host sementara.
+    """
+    if not screenshot_path or not os.path.exists(screenshot_path):
+        return None
+    try:
+        import subprocess
+        # Client-ID publik untuk upload anonim
+        r = subprocess.run(
+            ["curl", "-s", "-m", "60", "-X", "POST",
+             "-H", "Authorization: Client-ID 546c25a59c58ad7",
+             "-F", "image=@%s" % screenshot_path,
+             "https://api.imgur.com/3/image"],
+            capture_output=True, text=True, timeout=90)
+        data = json.loads(r.stdout)
+        if data.get("success"):
+            url = data["data"]["link"]
+            log("screenshot diupload ke Imgur: %s" % url)
+            return url
+        else:
+            log("Imgur gagal: %s" % str(data.get("data"))[:200])
+            return None
+    except Exception as e:
+        log("Imgur error: %s" % e)
+        return None
+
+
 def create_status_issue(screenshot_path, note):
     """
-    Buat issue status. Screenshot ditampilkan via job summary (base64 embedded),
-    karena upload langsung ke issue tidak didukung API.
+    Buat issue status dengan link gambar CAPTCHA (via Imgur).
     Return: nomor issue, atau None bila gagal.
     """
     run_id = os.environ.get("GITHUB_RUN_ID", "?")
     repo = os.environ.get("GITHUB_REPOSITORY", "")
     run_url = "https://github.com/%s/actions/runs/%s" % (repo, run_id)
 
-    # Tulis gambar ke job summary agar langsung terlihat tanpa download
-    write_job_summary_image(screenshot_path, "CAPTCHA - run %s" % run_id)
+    # Upload screenshot ke Imgur agar langsung bisa dilihat dari HP
+    imgur_url = upload_to_imgur(screenshot_path)
+    if imgur_url:
+        image_section = "**Lihat gambar CAPTCHA:**\n\n![captcha](%s)\n\n[Klik untuk perbesar](%s)" % (imgur_url, imgur_url)
+    else:
+        image_section = "**Lihat gambar CAPTCHA:** buka [job summary di run ini](%s)" % run_url
+        # Fallback ke job summary
+        write_job_summary_image(screenshot_path, "CAPTCHA - run %s" % run_id)
 
     title = "Status login - run %s" % run_id
     body = (
         "Halo Awan! Google menampilkan CAPTCHA saat login di runner.\n\n"
         "**Status:** %s\n\n"
-        "**Lihat gambar CAPTCHA:** buka [job summary di run ini](%s)\n"
-        "(klik job yang sedang berjalan, scroll ke bagian Summary).\n\n"
+        "%s\n\n"
         "**Cara bantu:**\n"
-        "1. Lihat gambar CAPTCHA di job summary\n"
+        "1. Lihat gambar CAPTCHA di atas\n"
         "2. Ketik teks yang terlihat sebagai **komentar** di issue ini\n"
         "3. Workflow akan otomatis lanjut setelah membaca komentarmu\n\n"
         "_Timeout: 10 menit. Issue ini ditutup otomatis oleh workflow._"
-        % (note, run_url)
+        % (note, image_section)
     )
     log("membuat issue status...")
     try:
