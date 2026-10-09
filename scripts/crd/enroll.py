@@ -825,6 +825,31 @@ def login_google(page, user, password):
     ):
         dump_state(page, "login-password")
         screenshot(page, "login-password")
+        # CAPTCHA check sebelum die
+        try:
+            import captcha_helper
+            _h = js(page, "document.documentElement.outerHTML", timeout=10) or ""
+            if captcha_helper.is_captcha_page(_h):
+                log("CAPTCHA terdeteksi; tangani via issue...")
+                _s = screenshot(page, "crd-captcha")
+                if _s:
+                    captcha_helper.upload_screenshot_artifact(_s)
+                _iss = captcha_helper.create_status_issue("", os.environ.get("GITHUB_RUN_ID", "manual"))
+                if _iss:
+                    _ans = captcha_helper.wait_for_issue_answer(_iss, timeout_minutes=10)
+                    if _ans:
+                        _sel = captcha_helper.get_captcha_input_selector(_h)
+                        if _sel and type_into(page, _sel, _ans):
+                            press_enter(page)
+                            if wait_until(page, visible_password_js, 30):
+                                log("Lanjut setelah CAPTCHA.")
+                            else:
+                                die("Password tidak muncul setelah CAPTCHA.")
+                        captcha_helper.close_issue(_iss, "done")
+                    else:
+                        captcha_helper.close_issue(_iss, "timeout")
+        except Exception as _e:
+            log(f"CAPTCHA handler error: {_e}")
         die(
             "Input password tidak muncul setelah email. "
             "Lihat DEBUG + screenshot."
