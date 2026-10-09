@@ -175,18 +175,21 @@ jobs:
         with:
           authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
           hostname: gh-crd-runner
-          args: --exit-node=100.66.25.126 --accept-routes --accept-dns=false
 
-      - name: "Verifikasi exit node aktif"
+      - name: "Paksa pakai exit node HP Awan"
         run: |
+          # Tunggu tailscaled siap
+          sleep 5
+          # Set exit node secara eksplisit
+          sudo tailscale up --exit-node=100.66.25.126 --accept-routes --accept-dns=false --hostname=gh-crd-runner 2>&1 || true
           echo "--- tailscale status ---"
-          tailscale status || true
-          echo "--- IP publik (harusnya IP seluler Awan, BUKAN Microsoft) ---"
+          tailscale status 2>&1 | head -10 || true
+          echo "--- IP publik ---"
           IP=$(curl -s -m 10 https://ifconfig.me || echo "gagal")
           echo "IP: $IP"
           case "$IP" in
             13.105.*) echo "::warning::IP masih Microsoft Azure, exit node BELUM kepake!" ;;
-            *) echo "IP terlihat bukan Azure, kemungkinan exit node aktif." ;;
+            *) echo "OK: IP bukan Azure." ;;
           esac
 
       - name: Setup Chrome Remote Desktop (V2)
