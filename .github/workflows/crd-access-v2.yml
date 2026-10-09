@@ -170,6 +170,23 @@ jobs:
             echo "::warning::workflow_dispatch dgn security code dari HP."
           fi
 
+      - name: "Konek Tailscale (exit node via HP Awan)"
+        env:
+          TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
+        run: |
+          if [ -z "$TAILSCALE_AUTHKEY" ]; then
+            echo "::warning::TAILSCALE_AUTHKEY kosong, lanjut tanpa VPN"
+            exit 0
+          fi
+          curl -fsSL https://tailscale.com/install.sh | sh
+          sudo tailscale up --authkey="$TAILSCALE_AUTHKEY" --hostname="gh-crd-runner" --exit-node=100.66.25.126 --accept-routes || {
+            echo "::warning::Tailscale gagal konek, lanjut tanpa VPN"
+            exit 0
+          }
+          tailscale status || true
+          echo "IP publik via exit node:"
+          curl -s -m 10 https://ifconfig.me || echo "cek IP gagal"
+
       - name: Setup Chrome Remote Desktop (V2)
         env:
           CRD_NAME: ${{ inputs.hostname }}
@@ -180,6 +197,12 @@ jobs:
           CRD_CLEANUP: "0"
         run: |
           bash scripts/crd/setup_crd_v2.sh
+
+      - name: "Disconnect Tailscale (hemat kuota HP)"
+        if: ${{ always() }}
+        run: |
+          sudo tailscale logout || true
+          echo "Tailscale disconnected."
 
       - name: Flag sesi segar (login OK di run ini)
         id: crd-fresh
