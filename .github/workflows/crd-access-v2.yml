@@ -178,12 +178,15 @@ jobs:
 
       - name: "Paksa pakai exit node HP Awan"
         run: |
-          # Tunggu tailscaled siap
           sleep 5
-          # Set exit node secara eksplisit
-          sudo tailscale up --exit-node=100.66.25.126 --accept-routes --accept-dns=false --hostname=gh-crd-runner 2>&1 || true
+          echo "Coba set exit node via nama device..."
+          sudo tailscale set --exit-node=infinix-60-pro-max 2>&1 || echo "set via nama gagal"
+          sleep 3
+          echo "Coba set exit node via IP..."
+          sudo tailscale set --exit-node=100.66.25.126 2>&1 || echo "set via IP gagal"
+          sleep 3
           echo "--- tailscale status ---"
-          tailscale status 2>&1 | head -10 || true
+          tailscale status 2>&1 | head -12 || true
           echo "--- IP publik ---"
           IP=$(curl -s -m 10 https://ifconfig.me || echo "gagal")
           echo "IP: $IP"
