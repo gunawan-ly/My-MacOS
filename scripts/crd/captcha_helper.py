@@ -85,25 +85,51 @@ def write_job_summary_image(screenshot_path, caption):
     """
     Tulis screenshot ke job summary GitHub Actions sebagai base64 embedded image.
     Awan bisa langsung lihat di halaman run tanpa download artifact.
+    Gambar di-resize dulu agar tidak terlalu besar.
     """
     summary_file = os.environ.get("GITHUB_STEP_SUMMARY", "")
-    if not summary_file or not screenshot_path or not os.path.exists(screenshot_path):
+    if not summary_file:
+        log("GITHUB_STEP_SUMMARY tidak tersedia")
+        return False
+    if not screenshot_path or not os.path.exists(screenshot_path):
+        log("screenshot tidak ditemukan: %s" % screenshot_path)
         return False
     try:
         import base64
+        # Baca dan resize gambar agar base64 tidak terlalu besar (max ~500KB)
         with open(screenshot_path, "rb") as f:
-            b64 = base64.b64encode(f.read()).decode("ascii")
-        html = (
-            "\n\n### %s\n"
-            '<img src="data:image/png;base64,%s" width="600" />\n'
-            % (caption, b64)
-        )
+            img_data = f.read()
+        log("ukuran screenshot asli: %d bytes" % len(img_data))
+        # Jika terlalu besar (>400KB), coba kompres via PIL bila tersedia
+        if len(img_data) > 400 * 1024:
+            try:
+                from PIL import Image
+                import io
+                img = Image.open(screenshot_path)
+                # Resize ke max 800px lebar
+                w, h = img.size
+                if w > 800:
+                    img = img.resize((800, int(h * 800 / w)), Image.LANCZOS)
+                buf = io.BytesIO()
+                img.save(buf, format="PNG", optimize=True)
+                img_data = buf.getvalue()
+                log("screenshot di-resize: %d bytes" % len(img_data))
+            except ImportError:
+                log("PIL tidak tersedia, pakai gambar asli")
+            except Exception as e:
+                log("resize gagal: %s" % e)
+        b64 = base64.b64encode(img_data).decode("ascii")
+        log("base64 length: %d" % len(b64))
+        # Gunakan markdown image dengan data URI (lebih kompatibel dari HTML)
+        md = "\n\n### %s\n\n![captcha](data:image/png;base64,%s)\n" % (caption, b64)
         with open(summary_file, "a") as f:
-            f.write(html)
-        log("screenshot ditulis ke job summary")
+            f.write(md)
+        log("screenshot ditulis ke job summary (%s)" % summary_file)
         return True
     except Exception as e:
         log("gagal tulis job summary: %s" % e)
+        import traceback
+        traceback.print_exc()
         return False
 
 
