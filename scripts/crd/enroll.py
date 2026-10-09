@@ -843,6 +843,7 @@ def login_google(page, user, password):
     if _pwd_wait != True:
         # _pwd_wait bisa False (timeout) atau "captcha" (terdeteksi dini)
         # Keduanya lanjut ke pengecekan CAPTCHA di bawah
+        _captcha_solved = False
         if _pwd_wait == "captcha":
             log("CAPTCHA terdeteksi dini saat menunggu password.")
         dump_state(page, "login-password")
@@ -860,7 +861,7 @@ def login_google(page, user, password):
                 _s = screenshot(page, "crd-captcha")
                 if _s:
                     captcha_helper.upload_screenshot_artifact(_s)
-                _iss = captcha_helper.create_status_issue("", os.environ.get("GITHUB_RUN_ID", "manual"))
+                _iss = captcha_helper.create_status_issue(_s or "", os.environ.get("GITHUB_RUN_ID", "manual"))
                 if _iss:
                     _ans = captcha_helper.wait_for_issue_answer(_iss, timeout_minutes=10)
                     if _ans:
@@ -869,6 +870,7 @@ def login_google(page, user, password):
                             press_enter(page)
                             if wait_until(page, visible_password_js, 30):
                                 log("Lanjut setelah CAPTCHA.")
+                                _captcha_solved = True
                             else:
                                 die("Password tidak muncul setelah CAPTCHA.")
                         captcha_helper.close_issue(_iss, "done")
@@ -876,10 +878,12 @@ def login_google(page, user, password):
                         captcha_helper.close_issue(_iss, "timeout")
         except Exception as _e:
             log(f"CAPTCHA handler error: {_e}")
-        die(
-            "Input password tidak muncul setelah email. "
-            "Lihat DEBUG + screenshot."
-        )
+        if not _captcha_solved:
+            die(
+                "Input password tidak muncul setelah email. "
+                "Lihat DEBUG + screenshot."
+            )
+        # Jika _captcha_solved True, lanjut ke bawah (tidak die)
 
     # Tunggu form Google selesai hydrate (avoid race: isi saat masih
     # "Loading" bisa di-reset oleh React setelah mount).
