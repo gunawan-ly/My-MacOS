@@ -81,26 +81,57 @@ def _try_upload_image(issue_number, png_path):
     return ""
 
 
+def write_job_summary_image(screenshot_path, caption):
+    """
+    Tulis screenshot ke job summary GitHub Actions sebagai base64 embedded image.
+    Awan bisa langsung lihat di halaman run tanpa download artifact.
+    """
+    summary_file = os.environ.get("GITHUB_STEP_SUMMARY", "")
+    if not summary_file or not screenshot_path or not os.path.exists(screenshot_path):
+        return False
+    try:
+        import base64
+        with open(screenshot_path, "rb") as f:
+            b64 = base64.b64encode(f.read()).decode("ascii")
+        html = (
+            "\n\n### %s\n"
+            '<img src="data:image/png;base64,%s" width="600" />\n'
+            % (caption, b64)
+        )
+        with open(summary_file, "a") as f:
+            f.write(html)
+        log("screenshot ditulis ke job summary")
+        return True
+    except Exception as e:
+        log("gagal tulis job summary: %s" % e)
+        return False
+
+
 def create_status_issue(screenshot_path, note):
     """
-    Buat issue status berisi screenshot halaman saat ini.
-    Dipakai agar Awan langsung bisa melihat keadaan tanpa menunggu timeout.
+    Buat issue status. Screenshot ditampilkan via job summary (base64 embedded),
+    karena upload langsung ke issue tidak didukung API.
     Return: nomor issue, atau None bila gagal.
     """
     run_id = os.environ.get("GITHUB_RUN_ID", "?")
     repo = os.environ.get("GITHUB_REPOSITORY", "")
     run_url = "https://github.com/%s/actions/runs/%s" % (repo, run_id)
 
+    # Tulis gambar ke job summary agar langsung terlihat tanpa download
+    write_job_summary_image(screenshot_path, "CAPTCHA - run %s" % run_id)
+
     title = "Status login - run %s" % run_id
     body = (
-        "Halo Awan! Ini screenshot keadaan halaman login di runner.\n\n"
+        "Halo Awan! Google menampilkan CAPTCHA saat login di runner.\n\n"
         "**Status:** %s\n\n"
-        "**Cara bantu (bila ada CAPTCHA di gambar):**\n"
-        "1. Lihat gambar di bawah (atau buka artifact `crd-debug-%s` di [run ini](%s))\n"
-        "2. Bila ada teks CAPTCHA terlihat, ketik sebagai **komentar** di issue ini\n"
+        "**Lihat gambar CAPTCHA:** buka [job summary di run ini](%s)\n"
+        "(klik job yang sedang berjalan, scroll ke bagian Summary).\n\n"
+        "**Cara bantu:**\n"
+        "1. Lihat gambar CAPTCHA di job summary\n"
+        "2. Ketik teks yang terlihat sebagai **komentar** di issue ini\n"
         "3. Workflow akan otomatis lanjut setelah membaca komentarmu\n\n"
-        "_Issue ini ditutup otomatis oleh workflow._"
-        % (note, run_id, run_url)
+        "_Timeout: 10 menit. Issue ini ditutup otomatis oleh workflow._"
+        % (note, run_url)
     )
     log("membuat issue status...")
     try:
@@ -111,18 +142,6 @@ def create_status_issue(screenshot_path, note):
 
     issue_number = issue.get("number")
     log("issue #%s dibuat" % issue_number)
-
-    # Coba upload screenshot ke issue, update body bila berhasil
-    img_md = _try_upload_image(issue_number, screenshot_path)
-    if img_md:
-        try:
-            new_body = body.replace(
-                "Lihat gambar di bawah",
-                "Lihat gambar di bawah:\n\n%s\n" % img_md)
-            _gh_api("PATCH", "/issues/%s" % issue_number, {"body": new_body})
-        except Exception as e:
-            log("gagal update body issue: %s" % e)
-
     return issue_number
 
 

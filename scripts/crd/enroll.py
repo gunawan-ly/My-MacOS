@@ -812,11 +812,9 @@ def login_google(page, user, password):
         "}return false;})()" % json.dumps(password_selector)
     )
 
-    # Cek bila ada jawaban CAPTCHA dari env (disediakan workflow setelah polling issue)
-    captcha_answer_env = os.environ.get("CRD_CAPTCHA_ANSWER", "").strip()
-
     # Tunggu singkat dulu (15 dtk); bila password tak kunjung muncul,
     # langsung buat issue + screenshot agar Awan bisa lihat keadaan.
+    # Polling dilakukan IN-PROCESS agar browser tetap hidup.
     if not wait_until(
         page,
         visible_password_js,
@@ -824,64 +822,58 @@ def login_google(page, user, password):
     ):
         dump_state(page, "login-password")
         screenshot_path = screenshot(page, "login-password")
-        # Simpan ke path tetap agar workflow bisa upload sebagai artifact
-        fixed_path = "/tmp/crd-captcha-screenshot.png"
-        try:
-            import shutil
-            if screenshot_path and os.path.exists(screenshot_path):
-                shutil.copy2(screenshot_path, fixed_path)
-                log("screenshot disalin ke %s" % fixed_path)
-        except Exception as e:
-            log("gagal salin screenshot: %s" % e)
 
-        # Langsung buat issue visibilitas (tak peduli CAPTCHA atau bukan).
+        # Buat issue + tulis gambar ke job summary (langsung terlihat).
         # Hanya aktif bila GITHUB_TOKEN tersedia (di dalam Actions).
         issue_number = None
         try:
             import captcha_helper
             issue_number = captcha_helper.create_status_issue(
-                fixed_path,
+                screenshot_path,
                 "Halaman login setelah email dikirim — kolom password belum muncul.")
-            # Simpan nomor issue agar workflow bisa polling
-            if issue_number:
-                with open("/tmp/crd-captcha-issue.txt", "w") as f:
-                    f.write(str(issue_number))
         except Exception as e:
             log("gagal buat issue status: %s" % e)
 
-        # Cek apakah ini CAPTCHA
-        is_captcha = False
+        # Cek apakah ini CAPTCHA; bila ya, polling jawaban Awan in-process.
+        captcha_answer = None
         try:
             import captcha_helper
             is_captcha = captcha_helper.is_captcha_page(
                 lambda expr, timeout=10: js(page, expr, timeout=timeout))
+            if is_captcha and issue_number:
+                log("CAPTCHA terdeteksi; menunggu jawaban Awan (browser tetap hidup)...")
+                captcha_answer = captcha_helper.wait_for_issue_answer(
+                    issue_number, timeout_minutes=10)
         except Exception as e:
             log("captcha helper gagal: %s" % e)
 
-        if is_captcha:
-            if captcha_answer_env:
-                # Jawaban sudah disediakan via env (dari polling workflow)
-                log("jawaban CAPTCHA dari env; mengisi...")
+        if captcha_answer:
+            try:
+                import captcha_helper
                 sel = captcha_helper.get_captcha_input_selector(
                     lambda expr, timeout=10: js(page, expr, timeout=timeout))
-                if sel and type_into(page, sel, captcha_answer_env):
+                if sel and type_into(page, sel, captcha_answer):
                     log("jawaban CAPTCHA diisi; submit...")
                     if not click_login_button(page):
                         press_enter(page)
                     if not wait_until(page, visible_password_js, 90):
                         dump_state(page, "login-password-after-captcha")
                         screenshot(page, "login-password-after-captcha")
+                        captcha_helper.close_issue(
+                            issue_number, "Gagal: password tak muncul setelah CAPTCHA.")
                         die("Password tetap tidak muncul setelah CAPTCHA diisi.")
                     log("kolom password muncul setelah CAPTCHA.")
+                    captcha_helper.close_issue(
+                        issue_number, "CAPTCHA terpecahkan, login lanjut.")
                 else:
+                    captcha_helper.close_issue(
+                        issue_number, "Gagal mengisi jawaban ke form.")
                     die("Gagal mengisi jawaban CAPTCHA ke form.")
-            else:
-                # Belum ada jawaban — keluar dengan kode khusus agar workflow
-                # upload screenshot lalu polling jawaban Awan, kemudian panggil lagi.
-                log("CAPTCHA butuh jawaban Awan; keluar kode 42.")
-                sys.exit(42)
+            except Exception as e:
+                log("error isi CAPTCHA: %s" % e)
+                die("Gagal proses CAPTCHA: %s" % e)
         else:
-            # Bukan CAPTCHA — beri waktu tambahan 45 dtk
+            # Bukan CAPTCHA atau timeout — beri waktu tambahan 45 dtk
             if not wait_until(page, visible_password_js, 45):
                 try:
                     import captcha_helper
