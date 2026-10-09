@@ -819,9 +819,13 @@ def login_google(page, user, password):
         screenshot(page, "login-password")
         # CAPTCHA check sebelum die
         try:
+            log("DEBUG: Cek CAPTCHA...")
             import captcha_helper
-            _h = js(page, "document.documentElement.outerHTML", timeout=10) or ""
-            if captcha_helper.is_captcha_page(lambda expr, timeout=10: js(page, expr, timeout=timeout)):
+            log("DEBUG: captcha_helper imported")
+            _js_fn = lambda expr, timeout=10: js(page, expr, timeout=timeout)
+            _is_cap = captcha_helper.is_captcha_page(_js_fn)
+            log(f"DEBUG: is_captcha={_is_cap}")
+            if _is_cap:
                 log("CAPTCHA terdeteksi; tangani via issue...")
                 _s = screenshot(page, "crd-captcha")
                 if _s:
