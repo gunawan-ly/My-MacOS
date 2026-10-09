@@ -15,6 +15,10 @@ on:
         description: 'Security code OTP dari HP (Settings > Google > Manage Google Account > Security & sign-in > Security code). Diperlukan saat job memakai perangkat/login baru; jika kosong memakai secret CRD_OTP.'
         required: false
         default: ''
+      captcha_retry:
+        description: 'Counter auto-retry CAPTCHA (internal, jangan diisi manual).'
+        required: false
+        default: '0'
 
 run-name: 'CRD V2 (${{ github.run_id }})'
 
@@ -119,6 +123,7 @@ jobs:
           fi
 
       - name: Setup Chrome Remote Desktop (V2)
+        id: crd-setup
         env:
           CRD_NAME: ${{ inputs.hostname }}
           GITHUB_RUN_ID: ${{ github.run_id }}
@@ -126,8 +131,34 @@ jobs:
           CRD_OTP: ${{ inputs.otp || secrets.CRD_OTP }}
           CRD_SESSION_FILE: /tmp/crd-session-cookies.json
           CRD_CLEANUP: "0"
+          CAPTCHA_RETRY: ${{ inputs.captcha_retry }}
         run: |
+          set +e
           bash scripts/crd/setup_crd_v2.sh
+          RC=$?
+          set -e
+          echo "exit_code=$RC" >> "$GITHUB_OUTPUT"
+          # Jika exit 42 (CAPTCHA), jangan fail step, biarkan step retry yang handle
+          if [ "$RC" -eq 42 ]; then
+            exit 0
+          fi
+          exit $RC
+
+      - name: Auto-retry jika kena CAPTCHA
+        if: ${{ steps.crd-setup.outputs.exit_code == '42' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          RETRY=$(( ${{ inputs.captcha_retry }} + 1 ))
+          echo "CAPTCHA terdeteksi, trigger retry ke-$RETRY..."
+          gh workflow run "macOS - Chrome Remote Desktop (V2)" \
+            --ref ${{ github.ref_name }} \
+            -f hostname="${{ inputs.hostname }}" \
+            -f keep_alive_minutes="${{ inputs.keep_alive_minutes }}" \
+            -f otp="${{ inputs.otp }}" \
+            -f captcha_retry="$RETRY"
+          echo "Retry triggered, akhiri run ini."
+          exit 1
 
       - name: Flag sesi segar (login OK di run ini)
         id: crd-fresh

@@ -397,8 +397,15 @@ enroll_host() {
                     GOOGLE_PASS="$GOOGLE_PASS" CRD_PIN="$CRD_PIN" \
                     CRD_OTP="${CRD_OTP:-}" CRD_CLEANUP="${CRD_CLEANUP:-0}" \
                     CRD_SESSION_FILE="${CRD_SESSION_FILE:-}" \
+                    CAPTCHA_RETRY="${CAPTCHA_RETRY:-0}" \
                     python3 "$ENROLL" 2>/tmp/crd.enroll.err.log)"
   rc=$?
+  if [ "$rc" -eq 42 ]; then
+    # Exit code 42 = CAPTCHA terdeteksi, signal untuk auto-retry
+    # Propagate ke workflow agar trigger run baru
+    echo "CAPTCHA terdeteksi, propagate exit code 42 untuk auto-retry..."
+    exit 42
+  fi
   if [ "$rc" -ne 0 ]; then
     cat /tmp/crd.enroll.err.log 2>/dev/null || true
     die "Enrollment gagal. Penyebab umum: 2FA/CAPTCHA, password salah, Chrome belum terpasang."

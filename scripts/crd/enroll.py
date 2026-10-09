@@ -34,6 +34,7 @@ import socket
 import struct
 import subprocess
 import sys
+import sys
 import threading
 import time
 import urllib.parse
@@ -826,7 +827,18 @@ def login_google(page, user, password):
             _is_cap = captcha_helper.is_captcha_page(_js_fn)
             log(f"DEBUG: is_captcha={_is_cap}")
             if _is_cap:
-                log("CAPTCHA terdeteksi; tangani via issue...")
+                # Auto-retry: jika CAPTCHA terdeteksi dan retry < 3, exit dengan kode 42
+                # Workflow akan trigger run baru dengan IP berbeda
+                _retry = int(os.environ.get("CAPTCHA_RETRY", "0"))
+                if _retry < 3:
+                    log(f"CAPTCHA terdeteksi (retry {_retry}/3). Trigger run baru dengan IP berbeda...")
+                    # Simpan screenshot untuk debug
+                    _s = screenshot(page, "crd-captcha")
+                    if _s:
+                        captcha_helper.upload_screenshot_artifact(_s)
+                    # Exit code 42 = signal untuk auto-retry
+                    sys.exit(42)
+                log("CAPTCHA terdeteksi; tangani via issue (retry habis)...")
                 _s = screenshot(page, "crd-captcha")
                 if _s:
                     captcha_helper.upload_screenshot_artifact(_s)
