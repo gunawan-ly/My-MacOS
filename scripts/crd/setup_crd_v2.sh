@@ -508,6 +508,7 @@ PY
 
 # ---------------------------------------------------------------------------
 main() {
+  local PHASE="${1:-all}"
   [ -n "$GOOGLE_USER" ] || die "GOOGLE_USER kosong (email akun pemilik CRD)."
   case "$GOOGLE_USER" in *@*) ;; *) die "GOOGLE_USER bukan email valid.";; esac
   [ -n "$GOOGLE_PASS" ] || die "GOOGLE_PASS kosong."
@@ -517,30 +518,36 @@ main() {
   command -v python3 >/dev/null 2>&1 || die "python3 tidak ada."
 
   log "=============================================="
-  log " Chrome Remote Desktop V2 | name=$CRD_NAME"
+  log " Chrome Remote Desktop V2 | name=$CRD_NAME | phase=$PHASE"
   log "=============================================="
 
-  preflight_sudo
-  install_host
-  local HOST_BIN
-  HOST_BIN="$(discover_host_bin)"
+  # Fase 1: install + login (sampai dapat session)
+  if [ "$PHASE" = "all" ] || [ "$PHASE" = "phase1" ]; then
+    preflight_sudo
+    install_host
+    enroll_host
+    log "Fase 1 selesai: login OK, session tersimpan."
+  fi
 
-  enroll_host
+  # Fase 2: registrasi host (setelah login)
+  if [ "$PHASE" = "all" ] || [ "$PHASE" = "phase2" ]; then
+    local HOST_BIN
+    HOST_BIN="$(discover_host_bin)"
+    grant_tcc "$HOST_BIN"
+    setup_launchagent "$HOST_BIN"
+    bounce_host
+    wake_display
+    verify_host "$HOST_BIN"
 
-  grant_tcc "$HOST_BIN"
-  setup_launchagent "$HOST_BIN"
-  bounce_host
-  wake_display
-  verify_host "$HOST_BIN"
-
-  echo ""
-  echo "=========================================================================="
-  echo " CRD (V2) READY — cara koneksi:"
-  echo "   1. Buka Chrome Remote Desktop (app/web) dgn akun $GOOGLE_USER."
-  echo "   2. Pilih host  : $CRD_NAME"
-  echo "   3. Masukkan PIN: $CRD_PIN"
-  echo "   Keep-alive    : ~$KEEP_ALIVE_MINUTES menit (sesuai batas job)."
-  echo "=========================================================================="
+    echo ""
+    echo "=========================================================================="
+    echo " CRD (V2) READY — cara koneksi:"
+    echo "   1. Buka Chrome Remote Desktop (app/web) dgn akun $GOOGLE_USER."
+    echo "   2. Pilih host  : $CRD_NAME"
+    echo "   3. Masukkan PIN: $CRD_PIN"
+    echo "   Keep-alive    : ~$KEEP_ALIVE_MINUTES menit (sesuai batas job)."
+    echo "=========================================================================="
+  fi
 }
 
 main "$@"
