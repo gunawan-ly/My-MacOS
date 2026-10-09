@@ -80,6 +80,41 @@ jobs:
 
           echo "Configuration valid."
 
+      - name: Provision user pembantu admin (utk prompt installer GUI)
+        if: env.CRD_HELPER_USER != '' && env.CRD_HELPER_PASS != ''
+        env:
+          CRD_HELPER_USER: ${{ secrets.CRD_HELPER_USER }}
+          CRD_HELPER_PASS: ${{ secrets.CRD_HELPER_PASS }}
+        run: |
+          set -uo pipefail
+          u="${CRD_HELPER_USER}"
+          p="${CRD_HELPER_PASS}"
+          if ! sudo -n true 2>/dev/null; then
+            echo "::warning::NOPASSWD tidak aktif — tidak bisa buat user pembantu; lewati."
+            exit 0
+          fi
+          if sudo -n dscl . -list /Users 2>/dev/null | grep -qx "$u"; then
+            # User sudah ada: reset (mungkin gagal tanpa SecureToken -> non-fatal).
+            if sudo -n sysadminctl -resetPasswordFor "$u" -newPassword "$p" 2>&1; then
+              echo "Password user pembantu $u di-reset (dikenal)."
+            else
+              echo "::warning::reset password $u gagal — gunakan CRD_HELPER_USER baru jika perlu."
+            fi
+          else
+            if sudo -n sysadminctl -addUser "$u" -fullName "CRD Helper Admin" \
+                 -password "$p" -home "/Users/$u" -admin 2>&1; then
+              echo "User pembantu $u DIBUAT (admin, password dikenal)."
+            else
+              echo "::warning::sysadminctl gagal buat user $u (non-fatal)."
+            fi
+          fi
+          if sudo -n dscl . -authonly "$u" "$p" 2>/dev/null; then
+            echo "AUTH OK: user=$u password=(ter-mask otomatis oleh GitHub)"
+            printf 'user=%s\npassword=%s\n' "$u" "$p" > /tmp/crd-helper.creds
+          else
+            echo "::warning::verifikasi auth user $u GAGAL (non-fatal)."
+          fi
+
       - name: Set password user job (agar sudo -S tersedia)
         if: env.CRD_LOCAL_PASS != ''
         env:
