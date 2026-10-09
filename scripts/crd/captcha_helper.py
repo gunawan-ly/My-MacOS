@@ -331,7 +331,11 @@ def get_captcha_input_selector(js_fn):
     candidates = [
         "input[name='ca']",
         "input#ca",
+        "input[name='captcha']",
+        "input[id*='captcha' i]",
         "input[aria-label*='Type the text' i]",
+        "input[aria-label*='captcha' i]",
+        "input[placeholder*='Type the text' i]",
     ]
     for sel in candidates:
         try:
@@ -344,4 +348,19 @@ def get_captcha_input_selector(js_fn):
                 return sel
         except Exception:
             continue
+    # Fallback: cari input text yang terlihat (bukan email/password)
+    try:
+        fallback = js_fn(
+            "(function(){"
+            "var inputs=document.querySelectorAll('input[type=\"text\"],input:not([type])');"
+            "for(var i=0;i<inputs.length;i++){"
+            "var el=inputs[i];var r=el.getBoundingClientRect();"
+            "if(r.width>0&&r.height>0&&el.type!=='email'&&el.type!=='password'){"
+            "var idx=i;el.setAttribute('data-captcha-idx',idx);return 'input[data-captcha-idx=\"'+idx+'\"]';"
+            "}}return null;})()",
+            timeout=10)
+        if fallback:
+            return fallback
+    except Exception:
+        pass
     return None
