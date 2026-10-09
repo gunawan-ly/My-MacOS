@@ -350,6 +350,30 @@ def wait_until(page, expr, timeout=30, invert=False):
     return False
 
 
+def wait_until_or_captcha(page, expr, timeout=30, invert=False, captcha_interval=10):
+    """Seperti wait_until, tapi cek CAPTCHA setiap captcha_interval detik.
+    Return True jika kondisi terpenuhi, "captcha" jika CAPTCHA terdeteksi, False jika timeout."""
+    deadline = time.time() + timeout
+    last_check = 0
+    while time.time() < deadline:
+        if time.time() - last_check >= captcha_interval:
+            last_check = time.time()
+            try:
+                import captcha_helper
+                if captcha_helper.is_captcha_page(lambda e, t=10: js(page, e, timeout=t)):
+                    return "captcha"
+            except Exception:
+                pass
+        try:
+            v = js(page, expr, timeout=10)
+            if bool(v) is not invert:
+                return True
+        except Exception:
+            pass
+        time.sleep(0.8)
+    return False
+
+
 def type_into(page, selector, value):
     ok = js(
         page,
@@ -810,11 +834,17 @@ def login_google(page, user, password):
         "}return false;})()" % json.dumps(password_selector)
     )
 
-    if not wait_until(
+    _pwd_wait = wait_until_or_captcha(
         page,
         visible_password_js,
-        60
-    ):
+        60,
+        captcha_interval=10
+    )
+    if _pwd_wait != True:
+        # _pwd_wait bisa False (timeout) atau "captcha" (terdeteksi dini)
+        # Keduanya lanjut ke pengecekan CAPTCHA di bawah
+        if _pwd_wait == "captcha":
+            log("CAPTCHA terdeteksi dini saat menunggu password.")
         dump_state(page, "login-password")
         screenshot(page, "login-password")
         # CAPTCHA check sebelum die
