@@ -829,7 +829,7 @@ def login_google(page, user, password):
         try:
             import captcha_helper
             _h = js(page, "document.documentElement.outerHTML", timeout=10) or ""
-            if captcha_helper.is_captcha_page(_h):
+            if captcha_helper.is_captcha_page(lambda expr, timeout=10: js(page, expr, timeout=timeout)):
                 log("CAPTCHA terdeteksi; tangani via issue...")
                 _s = screenshot(page, "crd-captcha")
                 if _s:
@@ -838,7 +838,7 @@ def login_google(page, user, password):
                 if _iss:
                     _ans = captcha_helper.wait_for_issue_answer(_iss, timeout_minutes=10)
                     if _ans:
-                        _sel = captcha_helper.get_captcha_input_selector(_h)
+                        _sel = captcha_helper.get_captcha_input_selector(lambda expr, timeout=10: js(page, expr, timeout=timeout))
                         if _sel and type_into(page, _sel, _ans):
                             press_enter(page)
                             if wait_until(page, visible_password_js, 30):
