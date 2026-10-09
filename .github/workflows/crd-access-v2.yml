@@ -133,7 +133,23 @@ jobs:
           # /tmp/crd-session-cookies.json agar try_restore_session() memakainya.
           python3 scripts/crd/convert_cookies.py
 
-      - name: "Tahap 1: Install + Login Google"
+      - name: "Konek Tailscale (exit node via HP Awan)"
+        env:
+          TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
+        run: |
+          # Install Tailscale
+          curl -fsSL https://tailscale.com/install.sh | sh
+          # Konek ke tailnet dengan exit node HP Awan (100.66.25.126)
+          # --accept-routes: terima routes dari tailnet
+          sudo tailscale up --authkey="$TAILSCALE_AUTHKEY" --hostname="gh-crd-runner" --exit-node=100.66.25.126 --accept-routes || {
+            echo "::warning::Tailscale gagal konek, lanjut tanpa VPN (fallback ke CAPTCHA via issue)"
+          }
+          # Verifikasi koneksi
+          tailscale status || echo "::warning::tailscale status gagal"
+          # Cek IP publik (harusnya IP seluler Awan kalau exit node aktif)
+          curl -s -m 10 https://ifconfig.me || echo "cek IP gagal"
+
+      - name: "Setup CRD (Install + Login + Registrasi)"
         env:
           CRD_NAME: ${{ inputs.hostname }}
           GITHUB_RUN_ID: ${{ github.run_id }}
@@ -149,7 +165,14 @@ jobs:
           if [ -f scripts/crd/package.json ]; then
             (cd scripts/crd && npm install --no-audit --no-fund --silent) || echo "::warning::npm install gagal, upload langsung dinonaktifkan"
           fi
-          bash scripts/crd/setup_crd_v2.sh phase1
+          # Jalankan semua tahap sekaligus (tanpa split phase1/phase2)
+          bash scripts/crd/setup_crd_v2.sh all
+
+      - name: "Disconnect Tailscale (hemat kuota HP)"
+        if: ${{ always() }}
+        run: |
+          sudo tailscale logout || true
+          echo "Tailscale disconnected. Awan bisa matiin exit node di HP."
 
       - name: Upload Screenshot Login
         if: ${{ always() }}
@@ -159,20 +182,6 @@ jobs:
           if-no-files-found: warn
           path: |
             /tmp/crd-*.png
-
-      - name: "Tahap 2: Registrasi Host CRD"
-        env:
-          CRD_NAME: ${{ inputs.hostname }}
-          GITHUB_RUN_ID: ${{ github.run_id }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          KEEP_ALIVE_MINUTES: ${{ inputs.keep_alive_minutes }}
-          CRD_OTP: ${{ inputs.otp || secrets.CRD_OTP }}
-          CRD_SESSION_FILE: /tmp/crd-session-cookies.json
-          CRD_CLEANUP: "0"
-          CRD_SKIP_SESSION_RESTORE: "1"
-        run: |
-          bash scripts/crd/setup_crd_v2.sh phase2
 
       - name: Flag sesi segar (login OK di run ini)
         id: crd-fresh
