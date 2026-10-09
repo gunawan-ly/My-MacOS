@@ -134,6 +134,7 @@ jobs:
           python3 scripts/crd/convert_cookies.py
 
       - name: Setup Chrome Remote Desktop (V2)
+        id: setup-crd
         env:
           CRD_NAME: ${{ inputs.hostname }}
           GITHUB_RUN_ID: ${{ github.run_id }}
@@ -145,6 +146,57 @@ jobs:
           CRD_CLEANUP: "0"
           CRD_SKIP_SESSION_RESTORE: "1"
         run: |
+          set +e
+          bash scripts/crd/setup_crd_v2.sh
+          rc=$?
+          echo "exit_code=$rc" >> "$GITHUB_OUTPUT"
+          # Exit 42 = CAPTCHA butuh jawaban; bukan failure, lanjut ke step polling
+          if [ "$rc" -eq 42 ]; then
+            echo "captcha_needed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "captcha_needed=false" >> "$GITHUB_OUTPUT"
+          exit $rc
+
+      - name: Upload screenshot CAPTCHA (langsung, agar bisa dilihat)
+        if: steps.setup-crd.outputs.captcha_needed == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: crd-captcha-${{ github.run_id }}
+          if-no-files-found: error
+          path: /tmp/crd-captcha-screenshot.png
+
+      - name: Tunggu jawaban CAPTCHA dari Awan
+        id: captcha-wait
+        if: steps.setup-crd.outputs.captcha_needed == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+        run: |
+          python3 scripts/crd/wait_captcha_answer.py
+          if [ -f /tmp/crd-captcha-answer.txt ]; then
+            echo "answer_file=/tmp/crd-captcha-answer.txt" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::Tidak ada jawaban CAPTCHA."
+            exit 1
+          fi
+
+      - name: Lanjut setup dengan jawaban CAPTCHA
+        if: steps.setup-crd.outputs.captcha_needed == 'true'
+        env:
+          CRD_NAME: ${{ inputs.hostname }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          KEEP_ALIVE_MINUTES: ${{ inputs.keep_alive_minutes }}
+          CRD_OTP: ${{ inputs.otp || secrets.CRD_OTP }}
+          CRD_SESSION_FILE: /tmp/crd-session-cookies.json
+          CRD_CLEANUP: "0"
+          CRD_SKIP_SESSION_RESTORE: "1"
+        run: |
+          # Baca jawaban dari file (hindari via env langsung karena karakter khusus)
+          export CRD_CAPTCHA_ANSWER="$(cat /tmp/crd-captcha-answer.txt)"
           bash scripts/crd/setup_crd_v2.sh
 
       - name: Flag sesi segar (login OK di run ini)

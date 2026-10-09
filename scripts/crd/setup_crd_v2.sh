@@ -403,6 +403,12 @@ enroll_host() {
                     GITHUB_RUN_ID="${GITHUB_RUN_ID:-}" \
                     python3 "$ENROLL" 2>/tmp/crd.enroll.err.log)"
   rc=$?
+  if [ "$rc" -eq 42 ]; then
+    # Kode khusus: CAPTCHA butuh jawaban Awan. Teruskan agar workflow
+    # upload screenshot + polling jawaban, lalu panggil lagi.
+    log "enroll.py minta jawaban CAPTCHA (exit 42); teruskan ke workflow."
+    return 42
+  fi
   if [ "$rc" -ne 0 ]; then
     cat /tmp/crd.enroll.err.log 2>/dev/null || true
     die "Enrollment gagal. Penyebab umum: 2FA/CAPTCHA, password salah, Chrome belum terpasang."
