@@ -386,18 +386,20 @@ bounce_host() {
 # dengan mode 644 (host jalan sebagai user biasa).
 # ---------------------------------------------------------------------------
 enroll_host() {
+  local ENROLL_PHASE_ARG="${1:-all}"
   local ENROLL TMP CONFIG_JSON rc
   ENROLL="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/enroll.py"
   [ -f "$ENROLL" ] || die "enroll.py tidak ditemukan: $ENROLL"
   command -v python3 >/dev/null 2>&1 || die "python3 tidak ada."
 
-  log "Registrasi host '$CRD_NAME' ke akun $GOOGLE_USER (login Chrome via CDP)..."
+  log "enroll.py fase '$ENROLL_PHASE_ARG' untuk akun $GOOGLE_USER..."
   TMP="$(mktemp /tmp/crd.config.XXXXXX.json)"
   CONFIG_JSON="$(env CRD_NAME="$CRD_NAME" GOOGLE_USER="$GOOGLE_USER" \
                     GOOGLE_PASS="$GOOGLE_PASS" CRD_PIN="$CRD_PIN" \
                     CRD_OTP="${CRD_OTP:-}" CRD_CLEANUP="${CRD_CLEANUP:-0}" \
                     CRD_SESSION_FILE="${CRD_SESSION_FILE:-}" \
                     CRD_SKIP_SESSION_RESTORE="${CRD_SKIP_SESSION_RESTORE:-}" \
+                    ENROLL_PHASE="$ENROLL_PHASE_ARG" \
                     GITHUB_TOKEN="${GITHUB_TOKEN:-}" \
                     GITHUB_REPOSITORY="${GITHUB_REPOSITORY:-}" \
                     GITHUB_RUN_ID="${GITHUB_RUN_ID:-}" \
@@ -525,12 +527,13 @@ main() {
   if [ "$PHASE" = "all" ] || [ "$PHASE" = "phase1" ]; then
     preflight_sudo
     install_host
-    enroll_host
+    enroll_host login
     log "Fase 1 selesai: login OK, session tersimpan."
   fi
 
   # Fase 2: registrasi host (setelah login)
   if [ "$PHASE" = "all" ] || [ "$PHASE" = "phase2" ]; then
+    enroll_host register
     local HOST_BIN
     HOST_BIN="$(discover_host_bin)"
     grant_tcc "$HOST_BIN"

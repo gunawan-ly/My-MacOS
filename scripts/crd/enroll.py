@@ -1470,35 +1470,38 @@ def try_restore_session(page):
 
 
 # ---------------------------------------------------------------------------
-def main():
-    user = os.environ.get("GOOGLE_USER", "").strip()
-    password = os.environ.get("GOOGLE_PASS", "")
-    pin = os.environ.get("CRD_PIN", "")
-    name = os.environ.get("CRD_NAME", "mac-%s" % os.environ.get("GITHUB_RUN_ID", "runner")).strip()
-    if "@" not in user:
-        die("GOOGLE_USER harus berupa email.")
-    if not password:
-        die("GOOGLE_PASS kosong.")
-    if not re.fullmatch(r"\d{6,}", pin):
-        die("CRD_PIN harus 6+ digit.")
-    if not name:
-        die("CRD_NAME kosong.")
+SESSION_DATA_FILE = "/tmp/crd-session-data.json"
+
+
+def _save_session_data(jar, at, host_id):
+    """Simpan jar+at+host_id untuk fase registrasi."""
+    data = {"jar": jar, "at": at, "host_id": host_id}
+    with open(SESSION_DATA_FILE, "w") as f:
+        json.dump(data, f)
+    log("session data disimpan ke %s" % SESSION_DATA_FILE)
+
+
+def _load_session_data():
+    """Muat jar+at+host_id dari fase login."""
+    if not os.path.exists(SESSION_DATA_FILE):
+        die("Session data tidak ditemukan (%s). Jalankan fase login dulu." % SESSION_DATA_FILE)
+    with open(SESSION_DATA_FILE) as f:
+        data = json.load(f)
+    return data["jar"], data["at"], data["host_id"]
+
+
+def phase_login(user, password):
+    """Fase 1: login browser saja (dengan CAPTCHA via issue bila perlu)."""
+    chrome = find_chrome()
+    if not chrome:
+        die("Chrome tidak tersedia. Set env CHROME_PATH bila perlu.")
+    log("Chrome: %s" % chrome)
 
     host_id = str(uuid.uuid4())
     log("host_id tentatif: %s" % host_id)
 
-    chrome = find_chrome()
-    if not chrome:
-        die("Chrome tidak tersedia. Set env CHROME_PATH bila perlu.")
-    nm_path = find_nm()
-    if not nm_path:
-        die("native_messaging_host tidak ditemukan di /Library/PrivilegedHelperTools.")
-    log("Chrome: %s" % chrome)
-    log("NM: %s" % nm_path)
-
     proc = launch_chrome(chrome)
     page = None
-    nm = None
     try:
         page = cdp_connect()
         setup_page(page)
@@ -1517,7 +1520,37 @@ def main():
             jar, at = grab_session(page)
 
         save_session_cookies(page)
+        _save_session_data(jar, at, host_id)
+        log("FASE LOGIN SELESAI.")
+    finally:
+        try:
+            if page:
+                page.close()
+        except Exception:
+            pass
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+        time.sleep(1)
+        try:
+            proc.kill()
+        except Exception:
+            pass
 
+
+def phase_register(user, pin, name):
+    """Fase 2: registrasi host CRD memakai session dari fase login."""
+    jar, at, host_id = _load_session_data()
+    log("session dimuat: %d cookie." % len(jar))
+
+    nm_path = find_nm()
+    if not nm_path:
+        die("native_messaging_host tidak ditemukan di /Library/PrivilegedHelperTools.")
+    log("NM: %s" % nm_path)
+
+    nm = None
+    try:
         nm = NativeMessaging(nm_path)
         keys = nm.call({"type": "generateKeyPair"}, timeout=60)
         priv = keys.get("privateKey")
@@ -1559,24 +1592,38 @@ def main():
         log("SUKSES: config ditulis ke %s (host %s)" % (SECRETS_OUT, new_host_id))
     finally:
         try:
-            if page:
-                page.close()
-        except Exception:
-            pass
-        try:
             if nm:
                 nm.close()
         except Exception:
             pass
-        try:
-            proc.terminate()
-        except Exception:
-            pass
-        time.sleep(1)
-        try:
-            proc.kill()
-        except Exception:
-            pass
+
+
+def main():
+    user = os.environ.get("GOOGLE_USER", "").strip()
+    password = os.environ.get("GOOGLE_PASS", "")
+    pin = os.environ.get("CRD_PIN", "")
+    name = os.environ.get("CRD_NAME", "mac-%s" % os.environ.get("GITHUB_RUN_ID", "runner")).strip()
+    if "@" not in user:
+        die("GOOGLE_USER harus berupa email.")
+    if not password:
+        die("GOOGLE_PASS kosong.")
+    if not re.fullmatch(r"\d{6,}", pin):
+        die("CRD_PIN harus 6+ digit.")
+    if not name:
+        die("CRD_NAME kosong.")
+
+    # ENROLL_PHASE: login | register | all (default: all, kompatibel lama)
+    phase = os.environ.get("ENROLL_PHASE", "all").strip().lower()
+    if phase == "login":
+        log("== FASE LOGIN ==")
+        phase_login(user, password)
+    elif phase == "register":
+        log("== FASE REGISTRASI ==")
+        phase_register(user, pin, name)
+    else:
+        log("== FASE LENGKAP (login + registrasi) ==")
+        phase_login(user, password)
+        phase_register(user, pin, name)
 
 
 if __name__ == "__main__":
